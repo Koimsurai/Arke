@@ -3555,6 +3555,14 @@ impl Explorer {
 }
 
 impl Explorer {
+    /// Split view: a press in this side makes it the active one. Dividers stop their presses,
+    /// so they call this themselves.
+    pub(super) fn activate_on_press(&self, cx: &mut Context<Self>) {
+        if self.pane.split && !self.pane.active {
+            cx.emit(ExplorerEvent::Activated);
+        }
+    }
+
     /// Before each render: measure widths, collect background results, start background work as
     /// needed (preview, parent, folder sizes).
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3589,25 +3597,11 @@ impl Explorer {
         // While a column divider is dragged, Name keeps its width: fitting it to the other
         // columns live would move the dragged column's left edge, which the drag measures from.
         // It fits again on release.
-        let held_name = (self.column_resized && cx.has_active_drag())
+        let held_name = (self.column_resized && self.column_drag.is_some())
             .then(|| self.cols.map(|c| c.name))
             .flatten();
         self.cols = self.compute_columns(held_name);
         self.header_x.set(None);
-        // Preview pane edge released: save the width (app-wide).
-        if self.preview_resized && !cx.has_active_drag() {
-            let this = cx.entity().downgrade();
-            cx.defer(move |cx| {
-                let _ = this.update(cx, Self::save_preview_width);
-            });
-        }
-        // Column view divider released: save the column widths (app-wide).
-        if self.view_column_resized.is_some() && !cx.has_active_drag() {
-            let this = cx.entity().downgrade();
-            cx.defer(move |cx| {
-                let _ = this.update(cx, Self::save_view_column_widths);
-            });
-        }
         self.poll_pending_create(cx);
         self.poll_pending_rename(window, cx);
         self.poll_too_big_ask(window, cx);
@@ -3641,9 +3635,7 @@ impl Render for Explorer {
             .map(|d| Self::root_actions(d, cx))
             // Split view: clicking a side makes it active.
             .on_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                if this.pane.split && !this.pane.active {
-                    cx.emit(ExplorerEvent::Activated);
-                }
+                this.activate_on_press(cx);
             }))
             .map(|d| Self::mouse_navigation(d, cx))
             .child(
@@ -3853,8 +3845,7 @@ impl Explorer {
                 // to the other side of a split shouldn't depend on missing its preview pane.
                 .when_some(self.current_path().map(Path::to_path_buf), |d, here| {
                     accept_drops_into(d, here, cx)
-                })
-                .on_drag_move(cx.listener(Self::drag_preview_edge)),
+                }),
                     window,
                     crate::motion::ease_out,
                     crate::motion::SLIDE_LG,
@@ -3927,8 +3918,7 @@ impl Explorer {
                 // Drops land in the folder of the side it shows.
                 .when_some(self.current_path().map(Path::to_path_buf), |d, here| {
                     accept_drops_into(d, here, cx)
-                })
-                .on_drag_move(cx.listener(Self::drag_preview_edge)),
+                }),
                     window,
                     crate::motion::ease_out,
                     crate::motion::SLIDE_LG,

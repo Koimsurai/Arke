@@ -30,7 +30,7 @@ use super::{AppEvent, Explorer, ViewMode, layout, spawn_thread};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::prefs::Col;
-use crate::press_guard::is_double_click;
+use crate::splitter::{DragEnd, Look, Splitter};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::TooltipBelowExt as _;
 
@@ -73,20 +73,6 @@ impl Render for HeaderGhost {
             .text_size(theme::fs_12())
             .text_color(theme::text())
             .child(self.0.clone())
-    }
-}
-
-/// Column divider being dragged: which column, in which pane (in split view both panes' headers
-/// see the drag, and only the one it started in may size the column from its own edge).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DraggedColumn(Col, gpui::EntityId);
-
-/// Nothing under the cursor while resizing (the column or the preview pane itself moves).
-pub(super) struct ColumnDragView;
-
-impl Render for ColumnDragView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
     }
 }
 
@@ -158,14 +144,6 @@ impl Explorer {
     // ───────────────────────── Header ─────────────────────────
 
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Column resize released (anywhere): save to settings. Release triggers a redraw, which is
-        // where we notice.
-        if self.column_resized && !cx.has_active_drag() {
-            let this = cx.entity().downgrade();
-            cx.defer(move |cx| {
-                let _ = this.update(cx, Self::save_column_widths);
-            });
-        }
         // The columns, laid out like the rows below (same padding and gaps). What's right of them
         // is blank, like the list.
         let row = div()
@@ -202,25 +180,29 @@ impl Explorer {
                 .w(theme::col_location())
                 .flex_none(),
             )
-            .child(resizable(
-                self.search_header_cell(
-                    SearchColumn::Modified,
-                    t!("col.modified").into_owned(),
+            .child(
+                self.resizable(
+                    self.search_header_cell(
+                        SearchColumn::Modified,
+                        t!("col.modified").into_owned(),
+                        cx,
+                    )
+                    .w(crate::prefs::modified_width())
+                    .flex_none(),
+                    Col::Modified,
                     cx,
-                )
-                .w(crate::prefs::modified_width())
-                .flex_none(),
-                Col::Modified,
-                cx,
-            ))
-            .child(resizable(
-                self.search_header_cell(SearchColumn::Size, t!("col.size").into_owned(), cx)
-                    .w(crate::prefs::size_width())
-                    .flex_none()
-                    .justify_end(),
-                Col::Size,
-                cx,
-            ))
+                ),
+            )
+            .child(
+                self.resizable(
+                    self.search_header_cell(SearchColumn::Size, t!("col.size").into_owned(), cx)
+                        .w(crate::prefs::size_width())
+                        .flex_none()
+                        .justify_end(),
+                    Col::Size,
+                    cx,
+                ),
+            )
         } else {
             let name = self.header_cell(Col::Name, cx);
             let cells: Vec<AnyElement> = self
@@ -277,7 +259,7 @@ impl Explorer {
     /// The Name column's header: the select-all checkbox, room for the icon (and the tree's
     /// chevron), then `label`, with the column's divider on its right edge.
     fn name_header(&self, label: AnyElement, cx: &mut Context<Self>) -> AnyElement {
-        resizable(
+        self.resizable(
             div()
                 .w(self.column_width(Col::Name))
                 .flex_none()
@@ -422,7 +404,7 @@ impl Explorer {
         } else {
             cell
         };
-        resizable(cell, col, cx).into_any_element()
+        self.resizable(cell, col, cx).into_any_element()
     }
 
     /// A header was dropped on `target`: move `moved` there and save the order (app-wide).
@@ -838,62 +820,62 @@ fn shown_extension(entry: &Entry) -> SharedString {
         .map_or_default(|dot| SharedString::from(entry.name[dot..].to_owned()))
 }
 
-/// `cell` with its column's divider on its right edge: dragging it sizes `col` (the columns to its
-/// right move along), double-clicking fits it to its content.
-fn resizable<E: ParentElement + InteractiveElement + Styled>(
-    cell: E,
-    col: Col,
-    cx: &mut Context<Explorer>,
-) -> E {
-    cell.relative()
-        .child(column_resize_handle(col, cx))
-        .on_drag_move(
-            cx.listener(move |this, e: &gpui::DragMoveEvent<DraggedColumn>, _, cx| {
-                let dragged = *e.drag(cx);
-                if dragged.0 == col && dragged.1 == cx.entity_id() {
-                    // The column's left edge stays put; the divider (half a gap past the right
-                    // edge) follows the cursor.
-                    let width = e.event.position.x - e.bounds.left() - layout::col_gap() / 2.;
-                    crate::prefs::set_width(col, Some(width));
+impl Explorer {
+    /// `cell` with its column's divider on its right edge: dragging it sizes `col` (the columns
+    /// to its right move along), double-clicking fits it to its content.
+    fn resizable<E: ParentElement + Styled>(&self, cell: E, col: Col, cx: &mut Context<Self>) -> E {
+        cell.relative().child(self.column_resize_handle(col, cx))
+    }
+
+    /// Divider on a column header's right edge, in the gap to the next column (or the row's
+    /// padding after the last one): drag to resize, double-click to fit the content.
+    fn column_resize_handle(&self, col: Col, cx: &mut Context<Self>) -> impl IntoElement {
+        // Columns are 12 px apart: the divider sits in the middle, 8 px wide for an easy grab.
+        let hit = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(-10.))
+            .w(crate::theme::scaled_px(8.))
+            .flex()
+            .justify_center();
+        let line = div()
+            .w(px(1.))
+            .h(crate::theme::scaled_px(14.))
+            .my_auto()
+            .bg(theme::line());
+        let dragging = self.column_drag.is_some_and(|d| d.0 == col);
+        Splitter::new(("col-resize", col as usize), gpui::CursorStyle::ResizeLeftRight)
+            .look(Look::Subtle)
+            .dragging(dragging)
+            .on_start(cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                log::info!("column resize start: {col:?}");
+                this.activate_on_press(cx);
+                this.column_drag = Some((col, e.position.x, this.column_width(col)));
+            }))
+            .on_double_click(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                this.activate_on_press(cx);
+                this.autofit_column(col, window, cx);
+            }))
+            // The column's left edge stays put; its right edge moves as far as the cursor did since
+            // the press, so it neither jumps to the cursor nor lags behind it.
+            .on_drag(cx.listener(move |this, e: &gpui::MouseMoveEvent, _, cx| {
+                if let Some((c, from, start)) = this.column_drag
+                    && c == col
+                {
+                    crate::prefs::set_width(col, Some(start + e.position.x - from));
                     this.column_resized = true;
                     cx.notify();
                 }
-            }),
-        )
-}
-
-/// Divider on a column header's right edge, in the gap to the next column (or the row's padding
-/// after the last one): drag to resize, double-click to fit the content.
-fn column_resize_handle(col: Col, cx: &mut Context<Explorer>) -> impl IntoElement {
-    div()
-        .id(("col-resize", col as usize))
-        .absolute()
-        .top_0()
-        .bottom_0()
-        // Columns are 12 px apart: the divider sits in the middle, 8 px wide for an easy grab.
-        .right(px(-10.))
-        .w(crate::theme::scaled_px(8.))
-        .flex()
-        .justify_center()
-        .cursor(gpui::CursorStyle::ResizeLeftRight)
-        .group("col-resize")
-        .child(
-            div()
-                .w(px(1.))
-                .h(crate::theme::scaled_px(14.))
-                .my_auto()
-                .bg(theme::line())
-                .group_hover("col-resize", |s| s.bg(theme::text_subtle())),
-        )
-        .on_drag(DraggedColumn(col, cx.entity_id()), |d, _, _, cx| {
-            log::info!("column resize start: {:?}", d.0);
-            cx.new(|_| ColumnDragView)
-        })
-        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if is_double_click(e.click_count()) {
-                this.autofit_column(col, window, cx);
-            }
-        }))
+            }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| {
+                if this.column_drag.take().is_some() {
+                    this.save_column_widths(cx);
+                    cx.notify();
+                }
+            }))
+            .render(hit, line)
+    }
 }
 
 /// Explorer's shortcut arrow for symlinks and junctions: a small framed arrow over the icon's

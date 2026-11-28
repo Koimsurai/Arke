@@ -36,6 +36,7 @@ use crate::explorer::{DraggedFiles, Explorer, drop_external_into, drop_into, kin
 use crate::place_names::share_label;
 use crate::settings::{FAVORITES_MAX, PinSlot, SettingsStore, SidebarSection};
 use crate::shell::{KnownFolder, Place, PlaceKind};
+use crate::splitter::{DragEnd, Splitter};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
@@ -2580,42 +2581,36 @@ impl Workspace {
     /// places are, as the pinned tabs' line in Firefox does; double-clicked, the room is shared
     /// by itself again. Always a faint line, so it can be found; brighter under the mouse.
     fn render_places_split(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.split_drag.is_some();
-        div()
-            .id("sidebar-split")
-            .debug_selector(|| "sidebar-split".to_owned())
-            .group("sidebar-split")
-            .flex_none()
-            // Easy to take hold of: the whole strip, not only the line drawn in it.
-            .h(px(9.))
-            .flex()
-            .items_center()
-            .cursor_row_resize()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    if event.click_count >= 2 {
-                        this.split_drag = None;
-                        SettingsStore::global(cx)
-                            .update(cx, |s, cx| s.update(|st| st.sidebar_split = 0., cx));
-                    } else {
-                        let height = this.sidebar_ui.places_scroll.bounds().size.height;
-                        this.split_drag = Some((event.position.y, height, height));
-                    }
-                    cx.stop_propagation();
+        // Easy to take hold of: the whole strip, not only the line drawn in it.
+        let hit = div().flex_none().h(px(9.)).flex().items_center();
+        let line = div()
+            .w_full()
+            .mx(theme::s_8())
+            .h(px(2.))
+            .rounded(theme::R_FULL)
+            .bg(theme::line());
+        Splitter::new("sidebar-split", gpui::CursorStyle::ResizeRow)
+            .dragging(self.split_drag.is_some())
+            .on_start(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                let height = this.sidebar_ui.places_scroll.bounds().size.height;
+                this.split_drag = Some((e.position.y, height, height));
+                cx.notify();
+            }))
+            .on_double_click(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.split_drag = None;
+                SettingsStore::global(cx)
+                    .update(cx, |s, cx| s.update(|st| st.sidebar_split = 0., cx));
+                cx.notify();
+            }))
+            .on_drag(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                if let Some((from_y, from_h, _)) = this.split_drag {
+                    let height = (from_h + e.position.y - from_y).max(px(0.));
+                    this.split_drag = Some((from_y, from_h, height));
                     cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .mx(theme::s_8())
-                    .h(px(2.))
-                    .rounded(theme::R_FULL)
-                    .when(!active, |d| d.bg(theme::line()))
-                    .when(active, |d| d.bg(theme::signal()))
-                    .group_hover("sidebar-split", |s| s.bg(theme::signal_line())),
-            )
+                }
+            }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| this.finish_split_drag(cx)))
+            .render(hit, line)
             .into_any_element()
     }
 

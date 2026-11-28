@@ -518,6 +518,36 @@ mod tests {
         assert!(at(683.).collapse && !at(683.).sort_folded);
     }
 
+    /// #474: the two rows from the machine's log that left the path bar a level short. The room
+    /// was exactly the path (532.6, 533 in whole pixels), the info and the view tools: that fits,
+    /// and the path bar takes this decision instead of making its own.
+    #[test]
+    fn a_room_that_fits_exactly_keeps_the_whole_path() {
+        let tools = |info| RowParts {
+            switcher: 114.,
+            view: 42.,
+            sort: 46.,
+            more: 30.,
+            info,
+        };
+        // 1251 px, nothing selected: 533 + 165 + 114 + 46.
+        let parts = tools(Info::Folder(165.));
+        let row = row_layout(858., 532.6, &parts);
+        assert_eq!(row, parts.everything());
+        assert!(!row.collapse);
+        assert!(!row_layout(857., 532.6, &parts).switcher);
+        // 1360 px, one item selected: Sort in "⋯", the selection 391.4 wide, the view button 42.
+        let parts = tools(Info::Selection(SelectionParts {
+            full: 152.4,
+            ..measured()
+        }));
+        let row = row_layout(967., 532.6, &parts);
+        assert!(!row.collapse && !row.switcher && row.sort_folded, "{row:?}");
+        let selection = row.selection.expect("a selection");
+        assert_eq!((selection.summary, selection.hidden), (Summary::Full, 0));
+        assert!((parts.widths(&row).0.ceil() + 42. + 533. - 967.).abs() < 0.01);
+    }
+
     prop_compose! {
         /// Widths like the pane row's selection: buttons, the summary and the pill a few tokens
         /// wide. The pill is never much wider than the summary without the size, so "● 3 ⋯" is
@@ -749,6 +779,26 @@ mod tests {
                 prop_assert!(parts.fits(&layout, path, room), "{:?}", layout);
             } else {
                 prop_assert_eq!(layout, RowLayout { collapse: true, ..parts.folded() });
+            }
+        }
+
+        /// The path bar collapses levels exactly when the row can't fit it whole even with
+        /// everything else folded: [`RowLayout::collapse`] is the one decision, and the path bar
+        /// takes it rather than deciding from its slot on its own.
+        #[test]
+        fn the_path_bar_collapses_exactly_when_nothing_fits(
+            parts in row(),
+            path in 40_f32..900.,
+            room in 0_u16..1600,
+        ) {
+            let room = f32::from(room);
+            let layout = row_layout(room, path, &parts);
+            prop_assert_eq!(layout.collapse, !parts.fits(&parts.folded(), path, room));
+            // At a room that holds the layout exactly, the path is still whole.
+            if !layout.collapse {
+                let (info, tools) = parts.widths(&layout);
+                let exact = info.ceil() + tools.ceil() + path.ceil();
+                prop_assert!(!row_layout(exact, path, &parts).collapse);
             }
         }
 

@@ -8,8 +8,9 @@
 //! - switches for grouping, the Details tree, hidden items and file name extensions. They are the
 //!   same settings as in Settings, so every tab follows.
 //!
-//! Clicking outside or Esc closes it. Nothing here takes focus away from the list, so the keyboard
-//! keeps working while it is open.
+//! Clicking outside or Esc closes it. Opened with the mouse, nothing here takes focus away from the
+//! list, so the keyboard keeps working while it is open; opened from the keyboard or by a screen
+//! reader, it takes the keyboard itself, as `explorer_toolbar.rs` says (#322).
 
 use std::rc::Rc;
 
@@ -19,7 +20,7 @@ use gpui::{
 };
 use rust_i18n::t;
 
-use super::toolbar::ToolbarStop as _;
+use super::toolbar::{Choice, Mark, ToolbarStop as _, ViewSwitch};
 use super::{Explorer, IconSize, ViewColumns, ViewDetails, ViewMode};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
@@ -36,7 +37,50 @@ pub(super) fn segment_h() -> gpui::Pixels {
     crate::theme::scaled_px(22.)
 }
 
+/// The densities offered, in order.
+const DENSITIES: [Density; 3] = [Density::Compact, Density::Standard, Density::Comfortable];
+
 impl Explorer {
+    /// Opens or closes the flyout from the keyboard or a screen reader: open, it takes the focus
+    /// on the current layout.
+    fn toggle_view_options_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_view_options(cx);
+        let at = match self.view_mode {
+            ViewMode::Details => 0,
+            ViewMode::Icons => 1,
+            ViewMode::Columns => 2,
+        };
+        self.flyout_by_key(self.view_options_open, at, "view-options", window, cx);
+    }
+
+    /// The flyout's choices in order: the layouts, then the icon size (Icons) or the row density
+    /// (Details, not in split panes, whose rows are tighter unless compact), then the switches.
+    pub(super) fn view_choices(&self) -> Vec<Choice> {
+        let mode = self.view_mode;
+        let mut choices: Vec<Choice> = [ViewMode::Details, ViewMode::Icons, ViewMode::Columns]
+            .into_iter()
+            .map(Choice::Layout)
+            .collect();
+        match mode {
+            ViewMode::Icons => choices.push(Choice::IconSize),
+            ViewMode::Details if !self.pane.split => {
+                choices.extend(DENSITIES.map(Choice::Density));
+            }
+            ViewMode::Details | ViewMode::Columns => {}
+        }
+        if mode != ViewMode::Columns {
+            choices.push(Choice::Switch(ViewSwitch::GroupRows));
+        }
+        if mode == ViewMode::Details {
+            choices.push(Choice::Switch(ViewSwitch::DetailsTree));
+        }
+        choices.extend([
+            Choice::Switch(ViewSwitch::ShowHidden),
+            Choice::Switch(ViewSwitch::ShowExtensions),
+        ]);
+        choices
+    }
+
     /// Opens or closes the flyout.
     pub(super) fn toggle_view_options(&mut self, cx: &mut Context<Self>) {
         if !self.close_view_options(cx) {
@@ -82,8 +126,8 @@ impl Explorer {
             .id("view-options")
             .debug_selector(|| "view-options".to_owned())
             .a11y_button(t!("view.options"))
-            .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
-                this.toggle_view_options(cx);
+            .a11y_open_close(open, cx.entity().downgrade(), |this, window, cx| {
+                this.toggle_view_options_by_key(window, cx);
             })
             .flex()
             .flex_none()
@@ -111,15 +155,16 @@ impl Explorer {
             // Opens on press, like a menu; the scrim closes it again.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     this.toggle_view_options(cx);
+                    this.flyout_return("view-options", window, cx);
                 }),
             )
             .toolbar_menu("view-options", {
                 let this = cx.entity().downgrade();
-                move |_, cx| {
-                    let _ = this.update(cx, Self::toggle_view_options);
+                move |window, cx| {
+                    let _ = this.update(cx, |this, cx| this.toggle_view_options_by_key(window, cx));
                 }
             })
             .when(!open, |d| d.tooltip_below(t!("view.options")));
@@ -135,16 +180,17 @@ impl Explorer {
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            cx.listener(|this, _: &MouseDownEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.close_view_options(cx);
+                                this.flyout_return("view-options", window, cx);
                             }),
                         ),
                 ),
             )
             .with_priority(1);
             let panel = crate::motion::appear(
-                div().child(self.view_options_panel(cx)),
+                div().child(self.view_options_panel(window, cx)),
                 "view-options-appear",
                 0.,
                 -crate::motion::NUDGE,
@@ -152,7 +198,7 @@ impl Explorer {
             root = root.child(scrim).child(Self::view_options_flyout(panel));
         } else if let Some(ghost) = &self.closing_view_options {
             let panel = crate::motion::leave(
-                div().child(self.view_options_panel(cx)),
+                div().child(self.view_options_panel(window, cx)),
                 ghost.id("view-options-leave"),
                 0.,
                 -crate::motion::NUDGE,
@@ -180,12 +226,19 @@ impl Explorer {
             )
     }
 
-    fn view_options_panel(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn view_options_panel(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let mode = self.view_mode;
         let settings = crate::settings::SettingsStore::global(cx)
             .read(cx)
             .settings
             .clone();
+        let choices = self.view_choices();
+        let mark =
+            |choice: Choice| self.flyout_mark(choices.iter().position(|c| *c == choice), window);
         let layouts = div()
             .flex()
             .gap(theme::s_2())
@@ -194,72 +247,46 @@ impl Explorer {
             .bg(theme::segment_track())
             .child(layout_tile(
                 "vo-details",
-                ViewMode::Details,
+                (ViewMode::Details, mode),
                 t!("menu.view_details"),
-                mode,
+                mark(Choice::Layout(ViewMode::Details)),
                 cx.listener(|this, _: &ClickEvent, w, cx| this.view_details(&ViewDetails, w, cx)),
             ))
             .child(layout_tile(
                 "vo-icons",
-                ViewMode::Icons,
+                (ViewMode::Icons, mode),
                 t!("view.icons"),
-                mode,
+                mark(Choice::Layout(ViewMode::Icons)),
                 cx.listener(|this, _: &ClickEvent, _, cx| this.show_icons(cx)),
             ))
             .child(layout_tile(
                 "vo-columns",
-                ViewMode::Columns,
+                (ViewMode::Columns, mode),
                 t!("settings.view_columns"),
-                mode,
+                mark(Choice::Layout(ViewMode::Columns)),
                 cx.listener(|this, _: &ClickEvent, w, cx| this.view_columns(&ViewColumns, w, cx)),
             ));
-        let size_block = match mode {
-            ViewMode::Icons => Some(self.icon_size_block(cx)),
-            // Split panes have tighter rows of their own (compact density, set in Settings, still
-            // applies).
-            ViewMode::Details if !self.pane.split => Some(density_block(settings.density)),
-            ViewMode::Details | ViewMode::Columns => None,
+        let size_block = if choices.contains(&Choice::IconSize) {
+            Some(self.icon_size_block(mark(Choice::IconSize), cx))
+        } else if choices.contains(&Choice::Density(Density::Standard)) {
+            Some(density_block(
+                settings.density,
+                DENSITIES.map(|d| mark(Choice::Density(d))),
+            ))
+        } else {
+            None
         };
-        let mut toggles: Vec<AnyElement> = Vec::new();
-        if mode != ViewMode::Columns {
-            toggles.push(toggle_row(
-                "vo-group-rows",
-                t!("settings.group_rows"),
-                None,
-                None,
-                settings.group_rows,
-                |st| st.group_rows = !st.group_rows,
-            ));
-        }
-        if mode == ViewMode::Details {
-            toggles.push(toggle_row(
-                "vo-details-tree",
-                t!("settings.details_tree"),
-                Some(t!("view.tree_desc")),
-                None,
-                settings.details_tree,
-                |st| st.details_tree = !st.details_tree,
-            ));
-        }
-        toggles.push(toggle_row(
-            "vo-show-hidden",
-            t!("settings.show_hidden"),
-            None,
-            Some("Ctrl+H"),
-            settings.show_hidden,
-            |st| st.show_hidden = !st.show_hidden,
-        ));
-        toggles.push(toggle_row(
-            "vo-show-extensions",
-            t!("settings.show_extensions"),
-            None,
-            None,
-            settings.show_extensions,
-            |st| st.show_extensions = !st.show_extensions,
-        ));
+        let toggles: Vec<AnyElement> = choices
+            .iter()
+            .filter_map(|&choice| match choice {
+                Choice::Switch(switch) => Some(toggle_row(switch, &settings, mark(choice))),
+                _ => None,
+            })
+            .collect();
         div()
             .id("view-options-panel")
             .a11y(gpui::Role::Dialog, t!("view.options"))
+            .map(|d| self.flyout_keys(self.view_options_open, d, window, cx))
             .occlude()
             .w(panel_w())
             .p(theme::s_8())
@@ -279,7 +306,8 @@ impl Explorer {
     }
 
     /// Icons: label with the current size, and the slider between a small and a large grid glyph.
-    fn icon_size_block(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `(claim, ring)`: the keyboard is on the slider.
+    fn icon_size_block(&self, (claim, ring): Mark, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity().downgrade();
         let on_slide: crate::slider::OnSlide = Rc::new(move |fraction, _, cx: &mut App| {
             let size = IconSize::from_fraction(fraction);
@@ -313,6 +341,16 @@ impl Explorer {
                 div()
                     .id("vo-icon-size")
                     .a11y(gpui::Role::Slider, t!("view.icon_size"))
+                    .when(crate::a11y::active(), |d| {
+                        d.aria_value(self.icon_size.label().into_owned())
+                    })
+                    .when(
+                        claim,
+                        gpui::StatefulInteractiveElement::aria_active_descendant,
+                    )
+                    .when(ring, |d| {
+                        d.rounded(theme::r_4()).shadow(crate::keynav::ring())
+                    })
                     .flex()
                     .items_center()
                     .gap(theme::s_8())
@@ -351,11 +389,12 @@ pub(super) fn section_label(text: impl Into<String>) -> impl IntoElement {
 }
 
 /// One layout in the flyout: icon over its name, the current one raised like the switcher's thumb.
+/// `(claim, ring)`: the keyboard is on it.
 fn layout_tile(
     id: &'static str,
-    mode: ViewMode,
+    (mode, current): (ViewMode, ViewMode),
     label: impl Into<String>,
-    current: ViewMode,
+    (claim, ring): Mark,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let active = mode == current;
@@ -365,6 +404,10 @@ fn layout_tile(
         .debug_selector(|| id.to_owned())
         .a11y(gpui::Role::RadioButton, label.clone())
         .aria_toggled(crate::a11y::toggled(active))
+        .when(
+            claim,
+            gpui::StatefulInteractiveElement::aria_active_descendant,
+        )
         .flex_1()
         .min_w_0()
         .h(theme::s_32() + theme::s_20())
@@ -385,6 +428,7 @@ fn layout_tile(
             d.text_color(theme::text_muted())
                 .hover(|s| s.bg(theme::wash()))
         })
+        .when(ring, |d| d.shadow(crate::keynav::ring()))
         .on_click(on_click)
         .child(
             svg()
@@ -399,15 +443,24 @@ fn layout_tile(
         .child(div().max_w_full().truncate().child(label))
 }
 
-/// Details: row density as three text segments (the same setting as in Settings).
-fn density_block(density: Density) -> AnyElement {
+/// Details: row density as three text segments (the same setting as in Settings). `marks`: where
+/// the keyboard is, as [`DENSITIES`].
+fn density_block(density: Density, marks: [Mark; 3]) -> AnyElement {
     let option = |value: Density, label: std::borrow::Cow<'static, str>| {
         let active = value == density;
+        let (claim, ring) = DENSITIES
+            .iter()
+            .position(|d| *d == value)
+            .map_or((false, false), |ix| marks[ix]);
         let label = label.into_owned();
         div()
             .id(("vo-density", value as usize))
             .a11y(gpui::Role::RadioButton, label.clone())
             .aria_toggled(crate::a11y::toggled(active))
+            .when(
+                claim,
+                gpui::StatefulInteractiveElement::aria_active_descendant,
+            )
             .flex_1()
             .min_w_0()
             .h(segment_h())
@@ -426,6 +479,7 @@ fn density_block(density: Density) -> AnyElement {
                 d.text_color(theme::text_muted())
                     .hover(|s| s.bg(theme::wash()))
             })
+            .when(ring, |d| d.shadow(crate::keynav::ring()))
             .child(div().truncate().child(label))
             .on_click(move |_, _, cx| set(cx, |st| st.density = value))
     };
@@ -455,14 +509,30 @@ fn density_block(density: Density) -> AnyElement {
 }
 
 /// A switch row: label (and a one-line description), an optional shortcut, the switch.
-fn toggle_row(
-    id: &'static str,
-    label: std::borrow::Cow<'static, str>,
-    desc: Option<std::borrow::Cow<'static, str>>,
-    shortcut: Option<&'static str>,
-    on: bool,
-    toggle: impl Fn(&mut Settings) + 'static,
-) -> AnyElement {
+/// `(claim, ring)`: the keyboard is on the switch.
+fn toggle_row(switch: ViewSwitch, settings: &Settings, (claim, ring): Mark) -> AnyElement {
+    let (id, label, desc, shortcut) = match switch {
+        ViewSwitch::GroupRows => ("vo-group-rows", t!("settings.group_rows"), None, None),
+        ViewSwitch::DetailsTree => (
+            "vo-details-tree",
+            t!("settings.details_tree"),
+            Some(t!("view.tree_desc")),
+            None,
+        ),
+        ViewSwitch::ShowHidden => (
+            "vo-show-hidden",
+            t!("settings.show_hidden"),
+            None,
+            Some("Ctrl+H"),
+        ),
+        ViewSwitch::ShowExtensions => (
+            "vo-show-extensions",
+            t!("settings.show_extensions"),
+            None,
+            None,
+        ),
+    };
+    let on = switch.on(settings);
     // The switch is named after the row for screen readers (#322).
     let a11y = crate::a11y::active();
     let spoken = desc
@@ -475,6 +545,8 @@ fn toggle_row(
         .min_h(theme::h_ctl())
         .px(theme::s_8())
         .py(theme::s_4())
+        .rounded(theme::r_4())
+        .when(ring, |d| d.shadow(crate::keynav::ring()))
         .when(a11y, |d| {
             d.child(crate::a11y::described_scope(
                 gpui::SharedString::from(label.to_string()),
@@ -502,11 +574,12 @@ fn toggle_row(
                 .text_color(theme::text_subtle())
                 .child(keys)
         }))
-        .child(
-            div()
-                .flex_none()
-                .child(crate::workspace::flyout_switch(id, on, toggle)),
-        )
+        .child(div().flex_none().child(crate::workspace::flyout_switch(
+            id,
+            on,
+            move |s| switch.flip(s),
+            claim,
+        )))
         .when(a11y, |d| d.child(crate::a11y::end_label_scope()))
         .into_any_element()
 }

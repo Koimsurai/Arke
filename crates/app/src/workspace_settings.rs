@@ -1900,7 +1900,8 @@ impl Workspace {
                     "setup-guide-open",
                     t!("onboarding.settings_open"),
                     cx.listener(|_, _: &ClickEvent, window, cx| {
-                        super::welcome::open_guide(window, cx);
+                        // Closing it puts the focus back on this button (#322).
+                        super::welcome::open_guide(window.focused(cx), window, cx);
                     }),
                 ),
             ),
@@ -4065,24 +4066,27 @@ pub(crate) fn switch(
     on: bool,
     toggle: impl Fn(&mut Settings) + 'static,
 ) -> AnyElement {
-    switch_with(id, on, toggle, true)
+    switch_with(id, on, toggle, (true, false))
 }
 
 /// [`switch`] that Tab doesn't stop at and a click doesn't focus, for a flyout over the folder:
-/// the keys stay with the folder (the view options' tree switch).
+/// the keys stay with the folder (the view options' tree switch). `claim`: read as focused, the
+/// flyout having the keyboard on it (#322).
 pub(crate) fn flyout_switch(
     id: &'static str,
     on: bool,
     toggle: impl Fn(&mut Settings) + 'static,
+    claim: bool,
 ) -> AnyElement {
-    switch_with(id, on, toggle, false)
+    switch_with(id, on, toggle, (false, claim))
 }
 
+/// `stop`: a Tab stop; `claim`: read as focused (see [`flyout_switch`]).
 fn switch_with(
     id: &'static str,
     on: bool,
     toggle: impl Fn(&mut Settings) + 'static,
-    stop: bool,
+    (stop, claim): (bool, bool),
 ) -> AnyElement {
     // Track inner width is 32 (40 minus border and padding) and the thumb is 14, so it travels 18.
     const TRAVEL: f32 = 18.;
@@ -4133,6 +4137,10 @@ fn switch_with(
         .id(id)
         .a11y_switch(on)
         .when(stop, KeyStop::key_stop)
+        .when(
+            claim,
+            gpui::StatefulInteractiveElement::aria_active_descendant,
+        )
         .debug_selector(|| id.to_owned())
         .w(crate::theme::scaled_px(40.))
         .h(crate::theme::scaled_px(20.))

@@ -14,14 +14,19 @@
 //! clicked, so nothing is changed by looking. The card doesn't block the window. Skip closes it
 //! for good (`onboarding_done`); it opens again from Settings › About, the command palette, and
 //! for someone who updated, from What's new.
+//!
+//! From the keyboard (#322): the card takes the focus when it shows, so a screen reader reads it
+//! out; Tab and Shift+Tab go round its controls, Esc is Skip, and closing it puts the focus back
+//! where it was (the button that opened it, else the list or page shown). F6 still leaves it.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
     AnimationExt, AnyElement, AnyWindowHandle, App, ClickEvent, Context, FocusHandle, Global,
-    SharedString, Window, div, prelude::*, px, svg,
+    KeyBinding, SharedString, Window, actions, div, prelude::*, px, svg,
 };
 use rust_i18n::t;
 
@@ -33,6 +38,18 @@ use crate::keynav::KeyStop as _;
 use crate::onboarding::{Connect, Source, Takeover};
 use crate::settings::{Density, Material, Settings, SettingsStore};
 use crate::theme;
+
+actions!(workspace, [GuideNextStop, GuidePrevStop, GuideSkip]);
+
+const CONTEXT: &str = "SetupGuide";
+
+pub(super) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", GuideNextStop, Some(CONTEXT)),
+        KeyBinding::new("shift-tab", GuidePrevStop, Some(CONTEXT)),
+        KeyBinding::new("escape", GuideSkip, Some(CONTEXT)),
+    ]);
+}
 
 /// The steps, in order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -95,6 +112,14 @@ struct Guide {
     /// The window it is shown in.
     window: Option<AnyWindowHandle>,
     focus: Vec<FocusHandle>,
+    /// The card's own focus, which it takes when it shows (#322).
+    card: Option<FocusHandle>,
+    /// Where the focus goes back to when it closes; `None`: the list or page shown.
+    back: Option<FocusHandle>,
+    /// The card has been drawn and took the focus.
+    shown: bool,
+    /// Next or Back changed the step: the new one is read out.
+    moved: bool,
 }
 
 impl Global for Guide {}
@@ -110,11 +135,13 @@ pub(crate) fn welcome_due(cx: &App) -> bool {
     })
 }
 
-/// Opens the guide again at its first step, in `window` (the one it was asked from).
-pub(crate) fn open_guide(window: &Window, cx: &mut App) {
+/// Opens the guide again at its first step, in `window` (the one it was asked from). The focus
+/// goes back to `back` when it closes (`None`: the list or page shown).
+pub(crate) fn open_guide(back: Option<FocusHandle>, window: &Window, cx: &mut App) {
     cx.set_global(Guide {
         reopened: true,
         window: Some(window.window_handle()),
+        back,
         ..Guide::default()
     });
     cx.refresh_windows();
@@ -167,8 +194,23 @@ fn change_connect(cx: &mut App, f: impl FnOnce(&mut Connect)) {
 }
 
 impl Workspace {
+    /// Skip, Esc, or Done: closes the guide for good (see [`close_guide`]). The focus goes back
+    /// where it was before the guide took it, if it is still in the guide.
+    fn leave_guide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let card = guide(cx).card.clone();
+        let inside = card.is_some_and(|card| card.contains_focused(window, cx));
+        let back = guide(cx).back.take();
+        close_guide(cx);
+        if inside {
+            match back {
+                Some(back) => window.focus(&back, cx),
+                None => self.focus_active(window, cx),
+            }
+        }
+    }
+
     /// Confirms the step shown and moves on (or, after the last, closes the guide).
-    fn guide_next(&mut self, cx: &mut Context<Self>) {
+    fn guide_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (step, source, pins) = {
             let g = guide(cx);
             (g.step, g.source, g.pins.clone())
@@ -197,13 +239,15 @@ impl Workspace {
         }
         match step.next() {
             Some(next) => {
-                guide(cx).step = next;
+                let g = guide(cx);
+                g.step = next;
+                g.moved = true;
                 if next == Step::Pins {
                     self.read_pins(cx);
                 }
                 cx.refresh_windows();
             }
-            None => close_guide(cx),
+            None => self.leave_guide(window, cx),
         }
     }
 
@@ -259,6 +303,8 @@ pub(super) fn welcome_card(window: &Window, cx: &mut Context<Workspace>) -> Opti
     } else {
         Vec::new()
     };
+    let no_card = guide(cx).card.is_none();
+    let new_card = no_card.then(|| cx.focus_handle());
     let g = guide(cx);
     match g.window {
         Some(w) if w != here && windows.contains(&w) => return None,
@@ -267,7 +313,18 @@ pub(super) fn welcome_card(window: &Window, cx: &mut Context<Workspace>) -> Opti
     if g.focus.is_empty() {
         g.focus = handles;
     }
-    let step = g.step;
+    if let Some(card) = new_card {
+        g.card = Some(card);
+    }
+    let card_focus = g.card.clone()?;
+    let first = !std::mem::replace(&mut g.shown, true);
+    let (step, moved) = (g.step, g.moved);
+    // It takes the focus once, when it first shows, so a screen reader reads it out and the
+    // keyboard can reach it (#322). After this frame, once the card is drawn.
+    if first {
+        let focus = card_focus.clone();
+        cx.defer_in(window, move |_, window, cx| window.focus(&focus, cx));
+    }
     let body = match step {
         Step::Source => source_step(window, cx),
         Step::Look => look_step(window, cx),
@@ -282,6 +339,10 @@ pub(super) fn welcome_card(window: &Window, cx: &mut Context<Workspace>) -> Opti
         .id("welcome")
         .debug_selector(|| "welcome".to_owned())
         .a11y(gpui::Role::Dialog, t!("onboarding.welcome"))
+        .when(crate::a11y::active(), |d| d.aria_description(step_text(step)))
+        // The new step is read out after Next or Back, as the focus stays on the button.
+        .a11y_announce(|| moved.then(|| step_text(step)))
+        .map(|card| card_keys(card, &card_focus, cx))
         .occlude()
         .w_full()
         .p(theme::s_16())
@@ -315,9 +376,30 @@ pub(super) fn welcome_card(window: &Window, cx: &mut Context<Workspace>) -> Opti
     )
 }
 
-/// The step's title and line, the progress, and which step it is.
-fn header(step: Step) -> AnyElement {
-    let (title, desc) = match step {
+/// The card's keys: Tab and Shift+Tab go round its controls, Esc is Skip.
+fn card_keys(
+    card: gpui::Stateful<gpui::Div>,
+    focus: &FocusHandle,
+    cx: &mut Context<Workspace>,
+) -> gpui::Stateful<gpui::Div> {
+    card.key_context(CONTEXT)
+        .track_focus(focus)
+        .on_action(|_: &GuideNextStop, window, cx| {
+            if let Some(card) = guide(cx).card.clone() {
+                crate::keynav::next_within(&card, window, cx);
+            }
+        })
+        .on_action(|_: &GuidePrevStop, window, cx| {
+            if let Some(card) = guide(cx).card.clone() {
+                crate::keynav::prev_within(&card, window, cx);
+            }
+        })
+        .on_action(cx.listener(|this, _: &GuideSkip, window, cx| this.leave_guide(window, cx)))
+}
+
+/// The step's title and line.
+fn step_title(step: Step) -> (Cow<'static, str>, Cow<'static, str>) {
+    match step {
         Step::Source => (t!("onboarding.source_title"), t!("onboarding.source_desc")),
         Step::Look => (t!("onboarding.look_title"), t!("onboarding.look_desc")),
         Step::Connect => (
@@ -325,7 +407,23 @@ fn header(step: Step) -> AnyElement {
             t!("onboarding.connect_desc"),
         ),
         Step::Pins => (t!("onboarding.pins_title"), t!("onboarding.pins_desc")),
-    };
+    }
+}
+
+/// The step as a screen reader reads it: "Step 2 of 4. The title. Its line."
+fn step_text(step: Step) -> String {
+    let (title, desc) = step_title(step);
+    let at = t!(
+        "onboarding.step",
+        n = step.index() + 1,
+        total = Step::ALL.len()
+    );
+    format!("{at}. {title}. {desc}")
+}
+
+/// The step's title and line, the progress, and which step it is.
+fn header(step: Step) -> AnyElement {
+    let (title, desc) = step_title(step);
     let at = step.index();
     let count = Step::ALL.len();
     div()
@@ -398,23 +496,25 @@ fn footer(step: Step, cx: &mut Context<Workspace>) -> AnyElement {
         .flex()
         .items_center()
         .gap(theme::s_8())
-        .child(
-            div().flex_1().min_w_0().child(
-                button("welcome-skip", t!("onboarding.skip"), Look::Quiet)
-                    .on_click(|_, _, cx| close_guide(cx)),
+        .child(div().flex_1().min_w_0().child(
+            button("welcome-skip", t!("onboarding.skip"), Look::Quiet).on_click(
+                cx.listener(|this, _: &ClickEvent, window, cx| this.leave_guide(window, cx)),
             ),
-        )
+        ))
         .children(step.prev().map(|prev| {
             button("welcome-back", t!("onboarding.back"), Look::Outline).on_click(
                 move |_, _, cx| {
-                    guide(cx).step = prev;
+                    let g = guide(cx);
+                    g.step = prev;
+                    g.moved = true;
                     cx.refresh_windows();
                 },
             )
         }))
         .child(
-            button("welcome-next", next_label, Look::Primary)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.guide_next(cx))),
+            button("welcome-next", next_label, Look::Primary).on_click(
+                cx.listener(|this, _: &ClickEvent, window, cx| this.guide_next(window, cx)),
+            ),
         )
         .into_any_element()
 }
@@ -1019,7 +1119,8 @@ pub(super) fn offer_once(cx: &mut App) -> bool {
 }
 
 /// The What's new entry for someone who updated and hasn't been through the guide, or `None`.
-pub(super) fn whats_new_entry(cx: &App) -> Option<AnyElement> {
+/// The focus goes back to `page` when the guide closes (the entry is gone by then).
+pub(super) fn whats_new_entry(page: FocusHandle, cx: &App) -> Option<AnyElement> {
     if current(cx).is_none_or(|s| s.onboarding_done) {
         return None;
     }
@@ -1067,7 +1168,7 @@ pub(super) fn whats_new_entry(cx: &App) -> Option<AnyElement> {
                     t!("onboarding.whats_new_open"),
                     Look::Primary,
                 )
-                .on_click(|_, window, cx| open_guide(window, cx)),
+                .on_click(move |_, window, cx| open_guide(Some(page.clone()), window, cx)),
             )
             .into_any_element(),
     )

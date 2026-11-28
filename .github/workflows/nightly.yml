@@ -47,7 +47,7 @@ jobs:
       # The installers, as in release.yml (installer/arke.iss needs Inno Setup 6.7.4 or later, #406).
       - name: install Inno Setup
         if: steps.changed.outputs.build == 'true'
-        uses: $/.github/actions/install-inno-setup
+        uses: ./.github/actions/install-inno-setup # zizmor: ignore[self-repository] actionlint does not accept $/ yet; the checkout above is this commit
       # A dry run also checks the signing secret against the key built into Arke, so a wrong
       # secret shows here rather than in the first release (signs nothing it keeps).
       - name: build only (dry run)

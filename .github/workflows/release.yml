@@ -74,7 +74,7 @@ jobs:
         run: bash .github/release-tag.sh
       # The installers (installer/arke.iss) need Inno Setup 6.7.4 or later (#406).
       - name: install Inno Setup
-        uses: $/.github/actions/install-inno-setup
+        uses: ./.github/actions/install-inno-setup # zizmor: ignore[self-repository] actionlint does not accept $/ yet; the checkout above is this commit
       - name: build
         shell: bash
         env:

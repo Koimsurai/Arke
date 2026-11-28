@@ -648,18 +648,22 @@ fn explorer_move(cx: &mut VisualTestContext, at: Point<gpui::Pixels>) {
     cx.run_until_parked();
 }
 
-/// Moves the drag around `at` until the hover check has answered and the insertion mark is gone.
-fn wait_for_no_mark(cx: &mut VisualTestContext, at: Point<gpui::Pixels>) {
+/// Waits, without moving the drag, until the hover check has answered "no folders": the
+/// insertion mark and the "Add to favorites" slot are both gone.
+fn wait_for_no_mark(cx: &mut VisualTestContext) {
     let deadline = Instant::now() + Duration::from_secs(20);
-    let mut nudge = 0.;
-    while cx.debug_bounds("pin-insertion-mark").is_some() {
+    loop {
+        cx.run_until_parked();
+        if cx.debug_bounds("pin-insertion-mark").is_none()
+            && cx.debug_bounds("tile-add-favorite").is_none()
+        {
+            return;
+        }
         assert!(
             Instant::now() < deadline,
-            "the mark should go once no path is a folder"
+            "the mark and the slot should go once no path is a folder"
         );
         std::thread::sleep(Duration::from_millis(5));
-        nudge = 1. - nudge;
-        explorer_move(cx, at + point(px(nudge), px(0.)));
     }
 }
 
@@ -704,7 +708,7 @@ fn files_from_explorer_dropped_on_a_tile_edge_go_into_it(cx: &mut TestAppContext
     // The same once checked: no mark, and the whole tile takes them.
     let edge = left_edge(cx, "tile-slot-2");
     explorer_drag(cx, &[r"C:\f\y.txt"], edge);
-    wait_for_no_mark(cx, edge);
+    wait_for_no_mark(cx);
     assert!(
         cx.debug_bounds("tile-add-favorite").is_none(),
         "nothing to add, no slot"
@@ -743,7 +747,7 @@ fn files_from_explorer_dropped_on_a_pinned_row_edge_go_into_it(cx: &mut TestAppC
     let row = cx.debug_bounds("pin-row-0").expect("the pinned row");
     let top = point(row.center().x, row.top() + px(2.));
     explorer_drag(cx, &[r"C:\f\x.txt"], top);
-    wait_for_no_mark(cx, top);
+    wait_for_no_mark(cx);
     cx.simulate_event(FileDropEvent::Submit {
         position: top + point(px(1.), px(0.)),
     });

@@ -56,7 +56,7 @@ fn strip_with_tabs(
 ) -> (Entity<Workspace>, &mut VisualTestContext) {
     let fs = FakeFs::new();
     for ix in 0..folders {
-        fs.insert_many(&folder(ix), 1);
+        fs.insert_many(folder(ix), 1);
     }
     let (ws, cx) = setup_workspace_with(cx, fs, Arc::new(FakeShell::default()), &folder(0));
     let view = ws.update(cx, |ws, _| ws.active_view().clone());

@@ -658,8 +658,9 @@ impl Explorer {
 
     /// The drawn width of each breadcrumb (with its leading ›), and of the "…" piece.
     fn crumb_widths(crumbs: &[(String, PathBuf)], window: &Window) -> (Vec<Pixels>, Pixels) {
+        // Laid out rounded up to whole pixels, as every text is.
         let text_w = |text: &str, size: Pixels, weight: gpui::FontWeight| {
-            super::top_bar::text_width(text, size, weight, window)
+            super::top_bar::text_width(text, size, weight, window).ceil()
         };
         let pad = theme::s_6() * 2.;
         let last = crumbs.len().saturating_sub(1);
@@ -770,6 +771,11 @@ impl Explorer {
         // Shrunk for the search box: just "… › current folder".
         if compact && crumbs.len() > 1 {
             return Some(0..crumbs.len() - 1);
+        }
+        // Whether levels collapse at all is the pane row's call, made with everything else in the
+        // row (`Explorer::row_layout`); how many is the slot's.
+        if !self.row_fold.path_collapses {
+            return None;
         }
         let avail = slot - Self::path_chrome();
         let (widths, more) = Self::crumb_widths(crumbs, window);

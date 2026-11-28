@@ -259,6 +259,7 @@ impl Workspace {
                         if !folders {
                             state.slot = None;
                             state.mark = None;
+                            state.over_tiles = false;
                         }
                         cx.notify();
                     }

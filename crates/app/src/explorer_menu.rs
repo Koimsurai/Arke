@@ -1185,9 +1185,12 @@ impl ContextMenu {
     #[cfg(test)]
     pub(crate) fn key_of(&self, label: &str) -> Option<(char, String)> {
         self.level(0).iter().find_map(|entry| match entry {
-            MenuEntry::Item(row) if row.label.as_ref() == label => row
-                .access
-                .map(|access| (access.key, drawn_text(row.label.clone(), access).0.to_string())),
+            MenuEntry::Item(row) if row.label.as_ref() == label => row.access.map(|access| {
+                (
+                    access.key,
+                    drawn_text(row.label.clone(), access).0.to_string(),
+                )
+            }),
             _ => None,
         })
     }

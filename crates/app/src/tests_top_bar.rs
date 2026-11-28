@@ -805,7 +805,10 @@ fn the_folded_toggles_take_access_keys(cx: &mut TestAppContext) {
     assert_eq!(compare, Some(('M', t!("compare.compare_tip").into_owned())));
     cx.simulate_keystrokes("n");
     settle(cx);
-    assert!(right.update(cx, |v, _| v.context_menu.is_none()), "N runs it");
+    assert!(
+        right.update(cx, |v, _| v.context_menu.is_none()),
+        "N runs it"
+    );
     assert!(right.update(cx, |v, _| v.pane.synced), "synchronized");
 
     rust_i18n::set_locale("zh-TW");
@@ -815,7 +818,10 @@ fn the_folded_toggles_take_access_keys(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("m");
     settle(cx);
     rust_i18n::set_locale("en");
-    assert!(right.update(cx, |v, _| v.context_menu.is_none()), "M runs it");
+    assert!(
+        right.update(cx, |v, _| v.context_menu.is_none()),
+        "M runs it"
+    );
     assert!(right.update(cx, |v, _| v.pane.comparing), "comparing");
 }
 

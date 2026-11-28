@@ -814,12 +814,7 @@ fn folders_from_explorer_dropped_on_a_tile_edge_are_still_added(cx: &mut TestApp
     added(cx, 4);
     assert_eq!(
         favorites(cx),
-        Some(vec![
-            p(r"C:\a"),
-            p(r"C:\f\two"),
-            p(r"C:\f\one"),
-            p(r"C:\b")
-        ])
+        Some(vec![p(r"C:\a"), p(r"C:\f\two"), p(r"C:\f\one"), p(r"C:\b")])
     );
     assert!(shell.ops().is_empty(), "nothing moved into a folder");
 }

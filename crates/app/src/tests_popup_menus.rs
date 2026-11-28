@@ -891,6 +891,97 @@ fn in_a_folders_menu_t_opens_the_terminal(cx: &mut TestAppContext) {
     assert!(shell.clipboard().is_none(), "T did not cut");
 }
 
+/// The icon buttons of the menu, each with the text it draws and the key in its corner.
+fn icon_row(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Vec<(String, Option<char>)> {
+    view.update(cx, |v, _| {
+        v.context_menu
+            .as_ref()
+            .expect("the menu is open")
+            .icon_row_for_test()
+    })
+}
+
+/// Where the menu's window last drew `selector`, drawn afresh.
+fn drawn_in(
+    popup_cx: &mut VisualTestContext,
+    selector: &'static str,
+) -> Option<Bounds<gpui::Pixels>> {
+    popup_cx.update(|window, _| window.refresh());
+    popup_cx.run_until_parked();
+    popup_cx.debug_bounds(selector)
+}
+
+/// In Chinese the icon buttons' text is the label alone, never "剪下(T)", which crowds them. The
+/// key shows in the button's corner once the underlines do, without moving the button, and works
+/// whether it is shown or not (#422).
+#[gpui::test]
+fn icon_buttons_show_their_key_in_a_corner_only_with_the_underlines(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = setup(cx, fs, Arc::clone(&shell), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    rust_i18n::set_locale("zh-TW");
+    let labels: Vec<String> = ["menu.cut", "menu.copy", "menu.rename", "menu.delete"]
+        .iter()
+        .map(|key| t!(*key).to_string())
+        .collect();
+    let with = |keys: [Option<char>; 4]| -> Vec<(String, Option<char>)> {
+        labels.iter().cloned().zip(keys).collect()
+    };
+
+    // Opened with the mouse: the labels alone, and no key drawn.
+    right_click(&view, cx, Some(0));
+    assert_eq!(icon_row(&view, cx), with([None; 4]));
+    assert!(
+        icon_row(&view, cx)
+            .iter()
+            .all(|(text, _)| !text.contains('('))
+    );
+    let (popup, _) = level_popup(&view, cx, 0).expect("the menu has a window");
+    let mut popup_cx = VisualTestContext::from_window(popup, &cx.cx);
+    let cut = drawn_in(&mut popup_cx, "menu-action-Cut").expect("Cut drawn");
+    assert!(drawn_in(&mut popup_cx, "menu-action-key-Cut").is_none());
+
+    // A key pressed shows the underlines: the keys come in the corners, the text stays the label
+    // and the button doesn't move or change size.
+    cx.simulate_keystrokes("z");
+    assert_eq!(
+        icon_row(&view, cx),
+        with([Some('T'), Some('C'), Some('M'), Some('D')])
+    );
+    let key = drawn_in(&mut popup_cx, "menu-action-key-Cut").expect("Cut's key drawn");
+    assert_eq!(drawn_in(&mut popup_cx, "menu-action-Cut"), Some(cut));
+    assert!(
+        key.is_contained_within(&cut),
+        "the key is in the button: {key:?} {cut:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    assert!(view.update(cx, |v, _| v.context_menu.is_none()));
+
+    // The key works while it isn't shown: C copies at once.
+    right_click(&view, cx, Some(0));
+    assert_eq!(icon_row(&view, cx), with([None; 4]));
+    cx.simulate_keystrokes("c");
+    wait_shell_in(cx, "copied", || shell.clipboard().is_some_and(|c| !c.cut));
+    assert!(view.update(cx, |v, _| v.context_menu.is_none()));
+
+    // And while it is: opened from the keyboard, T cuts.
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.open_context_menu_by_keyboard_for_test(window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        icon_row(&view, cx),
+        with([Some('T'), Some('C'), Some('M'), Some('D')])
+    );
+    cx.simulate_keystrokes("t");
+    wait_shell_in(cx, "cut", || shell.clipboard().is_some_and(|c| c.cut));
+    rust_i18n::set_locale("en");
+}
+
 /// How far the rows of menu level `level` are scrolled, how far they can be, and the box they
 /// scroll in (in that level's window).
 fn rows_scroll(

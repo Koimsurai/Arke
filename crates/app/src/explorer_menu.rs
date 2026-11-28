@@ -744,12 +744,7 @@ fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyEl
     let Some(access) = access else {
         return label.into_any_element();
     };
-    let (text, at): (SharedString, usize) = if let Some(at) = access.at {
-        (label, at)
-    } else {
-        let at = label.len() + 1;
-        (format!("{label}({})", access.key).into(), at)
-    };
+    let (text, at) = drawn_text(label, access);
     let end = at + access.key.len_utf8();
     if !cues.shown() || text.get(at..end).is_none() {
         return text.into_any_element();
@@ -764,6 +759,62 @@ fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyEl
     };
     StyledText::new(text)
         .with_highlights([(at..end, underline)])
+        .into_any_element()
+}
+
+/// The text a row with `access` draws, and where the key is in it: the label, with the key
+/// after it as `(O)` in the CJK form.
+fn drawn_text(label: SharedString, access: Access) -> (SharedString, usize) {
+    if let Some(at) = access.at {
+        (label, at)
+    } else {
+        let at = label.len() + 1;
+        (format!("{label}({})", access.key).into(), at)
+    }
+}
+
+/// The key an icon button underlines in its label: only one that is a letter of it. The CJK form,
+/// `(N)` after the text, would crowd the small buttons, so [`button_key`] shows that one instead
+/// (#422).
+const fn button_text_access(access: Option<Access>) -> Option<Access> {
+    match access {
+        Some(Access { at: Some(_), .. }) => access,
+        _ => None,
+    }
+}
+
+/// The key an icon button shows in its corner: one that isn't a letter of its label, and only
+/// while the underlines are shown.
+const fn button_key(access: Option<Access>, cues: Cues) -> Option<char> {
+    match access {
+        Some(Access { key, at: None }) if cues.shown() => Some(key),
+        _ => None,
+    }
+}
+
+/// [`button_key`] drawn as a small key cap in the icon button's top right corner. It is laid
+/// over the button, so the button keeps its size and nothing moves when it comes and goes.
+fn key_badge(key: char, enabled: bool, command: MenuCommand) -> AnyElement {
+    div()
+        .debug_selector(move || format!("menu-action-key-{command:?}"))
+        .absolute()
+        .top(theme::s_2())
+        .right(theme::s_2())
+        .min_w(theme::s_12())
+        .px(theme::s_2())
+        .flex()
+        .justify_center()
+        .rounded(theme::r_4())
+        .border_1()
+        .border_color(theme::line_strong())
+        .text_size(theme::fs_11())
+        .line_height(gpui::relative(theme::LH_TIGHT))
+        .text_color(if enabled {
+            theme::text_muted()
+        } else {
+            theme::text_disabled()
+        })
+        .child(key.to_string())
         .into_any_element()
 }
 
@@ -1216,6 +1267,25 @@ impl ContextMenu {
     #[cfg(test)]
     pub(crate) const fn cues_shown_for_test(&self) -> bool {
         self.cues.shown()
+    }
+
+    /// Test helper: the icon buttons of the innermost level, each with the text it draws and the
+    /// key shown in its corner.
+    #[cfg(test)]
+    pub(crate) fn icon_row_for_test(&self) -> Vec<(String, Option<char>)> {
+        self.level(self.open.len())
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Actions(items) => Some(items),
+                _ => None,
+            })
+            .flatten()
+            .map(|i| {
+                let text = button_text_access(i.access)
+                    .map_or_else(|| i.label.clone(), |a| drawn_text(i.label.clone(), a).0);
+                (text.to_string(), button_key(i.access, self.cues))
+            })
+            .collect()
     }
 
     /// Test helper: where `level` was drawn, and how far it is scrolled.
@@ -3904,6 +3974,7 @@ impl Explorer {
                     .id(("menu-action", ix))
                     .debug_selector(move || format!("menu-action-{command:?}"))
                     .a11y_menu_item(item.label.clone(), enabled, false, false)
+                    .relative()
                     .flex_1()
                     .py(theme::s_6())
                     .flex()
@@ -3939,7 +4010,15 @@ impl Explorer {
                                 theme::text_disabled()
                             })
                     }))
-                    .child(access_text(item.label.clone(), item.access, menu.cues))
+                    .child(access_text(
+                        item.label.clone(),
+                        button_text_access(item.access),
+                        menu.cues,
+                    ))
+                    .children(
+                        button_key(item.access, menu.cues)
+                            .map(|key| key_badge(key, enabled, command)),
+                    )
             }))
             .into_any_element()
     }
@@ -5180,5 +5259,30 @@ mod access_tests {
         assert!(Cues::opened(true, false).shown());
         assert!(Cues::opened(false, true).shown());
         assert!(!Cues::default().shown());
+    }
+
+    #[test]
+    fn icon_buttons_never_write_their_key_after_the_text() {
+        let off = Cues::opened(false, false);
+        let on = Cues::opened(true, false);
+        // The CJK form: no "(N)" in the text; the corner shows N, with the underlines only.
+        let cjk = Some(derive_access('n', "新增資料夾", None, true));
+        assert_eq!(button_text_access(cjk), None);
+        assert_eq!(
+            (button_key(cjk, off), button_key(cjk, on)),
+            (None, Some('N'))
+        );
+        // A letter of the label: underlined in it, as in the rows, and no corner key.
+        let latin = Some(derive_access('n', "New folder", None, false));
+        assert_eq!(button_text_access(latin), latin);
+        assert_eq!(button_key(latin, on), None);
+        // A Latin label without the letter goes to the corner too.
+        let missing = Some(derive_access('x', "Delete", None, false));
+        assert_eq!(button_text_access(missing), None);
+        assert_eq!(button_key(missing, on), Some('X'));
+        assert_eq!(
+            (button_text_access(None), button_key(None, on)),
+            (None, None)
+        );
     }
 }

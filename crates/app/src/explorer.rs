@@ -381,9 +381,11 @@ pub(crate) enum AppEvent {
         generation: u64,
         image: Option<Arc<gpui::RenderImage>>,
     },
-    ParentColumn {
-        dir: PathBuf,
-        entries: Arc<Vec<Entry>>,
+    /// A listing, change or failure for the column view's parent column (`column` tells it apart
+    /// from an earlier parent's).
+    ParentIo {
+        column: u64,
+        event: IoEvent,
     },
     /// Link target column: where these links in the folder listed as `generation` point (`None`
     /// when unreadable).
@@ -2052,6 +2054,7 @@ impl Explorer {
     pub(crate) fn refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.folder_sizes.invalidate();
         self.reload(cx);
+        self.parent_relist();
         if self.search_mode {
             // Refresh also rewalks subfolders.
             self.search_root = None;
@@ -2255,9 +2258,7 @@ impl Explorer {
                 dir,
                 folders,
             } => self.handle_path_folders(request, &dir, folders, cx),
-            AppEvent::ParentColumn { dir, entries } => {
-                self.handle_parent_column(dir, entries, cx);
-            }
+            AppEvent::ParentIo { column, event } => self.handle_parent_io(column, event, cx),
             AppEvent::LinkTargets { generation, found } => {
                 self.handle_link_targets(generation, found, cx);
             }
@@ -2689,6 +2690,7 @@ impl Explorer {
     fn apply_sort(&mut self, sort: SortSpec, cx: &mut Context<Self>) {
         self.sort = sort;
         self.tree_resort();
+        self.parent_resort();
         self.ensure_sorted(cx);
         cx.notify();
     }
@@ -3391,6 +3393,10 @@ impl Explorer {
         if mode != ViewMode::Details {
             self.tree_clear();
         }
+        if mode != ViewMode::Columns {
+            // Stops the parent column's watch, also in a tab not drawn right now.
+            self.parent_column = None;
+        }
         if let Some(ix) = self.cursor {
             self.scroll_to_index(ix, ScrollStrategy::Center);
         } else {
@@ -3525,6 +3531,7 @@ impl Explorer {
             self.hidden_rules = rules;
             self.show_hidden = show_hidden;
             self.reload(cx);
+            self.parent_relist();
             if self.search_mode {
                 self.update_search(cx);
             }

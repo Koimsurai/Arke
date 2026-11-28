@@ -366,6 +366,10 @@ impl Portable for CountingPhone {
 /// without reading a byte from the phone or staging anything (#529); pasting it in Arke copies
 /// the originals straight from the phone, with progress in bytes.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one copy followed from the clipboard to the pasted tree"
+)]
 fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() {
     use arke_remote::testing_mtp::Node;
     let devices = arke_remote::testing_mtp::FakeDevices::default();
@@ -397,10 +401,8 @@ fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() 
         cache.clone(),
     );
     let local = Arc::new(FakeShell::default());
-    let shell = crate::remote_shell::RemoteShell::new(
-        Arc::clone(&local) as Arc<dyn Shell>,
-        remotes,
-    );
+    let shell =
+        crate::remote_shell::RemoteShell::new(Arc::clone(&local) as Arc<dyn Shell>, remotes);
     let dcim = PathBuf::from("mtp://phone/Internal/DCIM");
 
     let seq = shell
@@ -409,11 +411,18 @@ fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() 
             cut: false,
         })
         .unwrap();
-    assert_eq!(phone.reads.load(Ordering::Relaxed), 0, "nothing was downloaded");
+    assert_eq!(
+        phone.reads.load(Ordering::Relaxed),
+        0,
+        "nothing was downloaded"
+    );
     assert!(!cache.join("staged").exists(), "nothing was staged");
-    assert!(local.clipboard.lock().is_none(), "no local copies on the clipboard");
+    assert!(
+        local.clipboard.lock().is_none(),
+        "no local copies on the clipboard"
+    );
     let (items, _) = local.remote_clipboard.lock().clone().unwrap();
-    assert_eq!(items.sources, [dcim.clone()]);
+    assert_eq!(items.sources, std::slice::from_ref(&dcim));
     assert!(!items.cut);
     assert!(items.listed().is_none(), "nor listed, until a program asks");
     assert!(shell.clipboard_has_files());
@@ -422,7 +431,7 @@ fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() 
     // folder (the job the progress center draws).
     let (files, got) = shell.clipboard_files().unwrap().unwrap();
     assert_eq!(got, seq);
-    assert_eq!(files.paths, [dcim.clone()]);
+    assert_eq!(files.paths, std::slice::from_ref(&dcim));
     assert!(!files.cut);
     let progress = Arc::new(crate::shell::OpProgress::default());
     let op = FileOp::Copy {
@@ -440,7 +449,11 @@ fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() 
         std::fs::read(dest.join(r"DCIM\Camera\c.jpg")).unwrap(),
         b"camera bytes"
     );
-    assert_eq!(phone.reads.load(Ordering::Relaxed), 2, "each file read once");
+    assert_eq!(
+        phone.reads.load(Ordering::Relaxed),
+        2,
+        "each file read once"
+    );
     assert!(progress.work_in_bytes.load(Ordering::Relaxed));
     assert_eq!(progress.bytes_total.load(Ordering::Relaxed), 22);
     assert_eq!(progress.bytes.load(Ordering::Relaxed), 22);

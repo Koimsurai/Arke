@@ -558,10 +558,12 @@ fn make_stream(source: Source) -> windows::core::Result<IStream> {
     if host.send(job).is_err() {
         return Err(E_FAIL.into());
     }
-    let made = answer.recv_timeout(Duration::from_secs(10)).map_err(|err| {
-        log::warn!("remote stream not made: {err}");
-        windows::core::Error::from(E_FAIL)
-    })?;
+    let made = answer
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|err| {
+            log::warn!("remote stream not made: {err}");
+            windows::core::Error::from(E_FAIL)
+        })?;
     made?.resolve()
 }
 
@@ -866,8 +868,8 @@ pub(crate) fn clipboard_is(seq: u32) -> bool {
         return false;
     };
     // SAFETY: only asks which window owns the clipboard.
-    let owned = unsafe { GetClipboardOwner() }.is_ok_and(|h| h.0.expose_provenance() == owner);
-    placed == seq && owner != 0 && owned
+    let still_ours = unsafe { GetClipboardOwner() }.is_ok_and(|h| h.0.expose_provenance() == owner);
+    placed == seq && owner != 0 && still_ours
 }
 
 /// Before Arke exits: takes its remote items off the clipboard if they are still there. Their
@@ -1000,8 +1002,11 @@ mod tests {
         let flag = |f: windows::Win32::UI::Shell::FD_FLAGS| f.0.cast_unsigned();
 
         assert_eq!(name_of(&folder), "DCIM");
-        let (attributes, flags, written) =
-            (folder.dwFileAttributes, folder.dwFlags, folder.ftLastWriteTime);
+        let (attributes, flags, written) = (
+            folder.dwFileAttributes,
+            folder.dwFlags,
+            folder.ftLastWriteTime,
+        );
         assert_ne!(attributes & FILE_ATTRIBUTE_DIRECTORY.0, 0);
         assert_ne!(flags & flag(FD_ATTRIBUTES), 0);
         assert_eq!(flags & flag(FD_FILESIZE), 0, "a folder has no size");
@@ -1138,7 +1143,10 @@ mod tests {
         let seq = set_clipboard(&items).unwrap();
         assert!(clipboard_is(seq));
         assert!(crate::win_virtual_drop::clipboard_has_virtual_files());
-        assert!(items.listed().is_none(), "nothing listed until a program asks");
+        assert!(
+            items.listed().is_none(),
+            "nothing listed until a program asks"
+        );
         super::super::set_clipboard_text("something else").unwrap();
         assert!(!clipboard_is(seq));
     }

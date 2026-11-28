@@ -3591,7 +3591,9 @@ fn back_on_one_home_tab_does_not_touch_the_other(cx: &mut TestAppContext) {
     change(cx, |s| s.new_tab = NewTabAction::Home);
     let home = t!("home.title").into_owned();
     // Home over b: its history has Home after b. A second tab starts on Home.
-    ws.update_in(cx, |ws, window, cx| ws.open_home_for_test(false, window, cx));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
     cx.simulate_keystrokes("ctrl-t");
     cx.run_until_parked();
     let second = ws.update(cx, |ws, _| ws.active_view().clone());

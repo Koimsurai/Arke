@@ -27,8 +27,8 @@ use arke_core::filetype::FileKind;
 use arke_core::{DeltaOutcome, DirModel, DirService, Entry, IoEvent, NavKind, service};
 use gpui::{
     AnyElement, ClickEvent, Context, Div, Entity, ExternalPaths, MouseButton, MouseDownEvent,
-    Pixels, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px, svg,
-    uniform_list,
+    Pixels, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px,
+    svg, uniform_list,
 };
 use rust_i18n::t;
 
@@ -132,7 +132,11 @@ impl Explorer {
             self.parent_column = None;
             return;
         };
-        if self.parent_column.as_ref().is_some_and(|c| c.level == level) {
+        if self
+            .parent_column
+            .as_ref()
+            .is_some_and(|c| c.level == level)
+        {
             // Couldn't be listed: try again once the user went to another folder.
             let moved = self
                 .parent_column
@@ -812,8 +816,7 @@ pub(super) fn accept_drops<E: InteractiveElement + IntoElement>(
 
 /// The parent column when its folder couldn't be listed: why, like the list's own error page.
 fn parent_failed(column: Div, dir: &Path, reason: &str) -> AnyElement {
-    let name = arke_core::path::leaf_name(dir)
-        .unwrap_or_else(|| dir.display().to_string());
+    let name = arke_core::path::leaf_name(dir).unwrap_or_else(|| dir.display().to_string());
     let icon = svg()
         .path(Icon::Close.path())
         .size(theme::s_24())

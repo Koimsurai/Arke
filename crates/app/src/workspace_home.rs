@@ -393,12 +393,7 @@ impl Workspace {
     /// Whether Home draws its recent files section (tests).
     #[cfg(test)]
     pub(crate) fn home_recent_shown_for_test(&self, cx: &App) -> Option<bool> {
-        Some(
-            self.home_here()?
-                .view
-                .read(cx)
-                .recent_shown_for_test(),
-        )
+        Some(self.home_here()?.view.read(cx).recent_shown_for_test())
     }
 
     /// Sidebar Home button. Shows as selected while open; clicking again closes it. `None` while

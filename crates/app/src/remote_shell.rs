@@ -337,6 +337,10 @@ impl RemoteItems {
 
     /// The listing, made from the server on the first call (one caller lists, the others wait
     /// for it). Background thread.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "held while listing, so the other callers wait for this one instead of listing too"
+    )]
     pub(crate) fn listing(&self) -> Result<Arc<Listing>, RemoteError> {
         let mut slot = self.listing.lock();
         if let Some(listing) = &*slot {
@@ -430,7 +434,7 @@ pub(crate) fn stage_local_copies(
 }
 
 /// How long copies in the download cache are kept: older ones go at the next start (#529).
-const CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_MAX_AGE: Duration = Duration::from_hours(24);
 
 /// Deletes what earlier runs left in the download cache `dir` (#529): staging folders older
 /// than [`CACHE_MAX_AGE`] (copies made for the clipboard or a drag out), and downloaded copies
@@ -1422,7 +1426,7 @@ mod tests {
     use super::*;
     use arke_remote::testing_mtp::{FakeDevices, Node};
 
-    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+    const DAY: Duration = Duration::from_hours(24);
 
     /// A phone with two photos in `DCIM`, and the guard of the hub's download cache.
     fn phone() -> (Arc<FakeDevices>, Arc<Remotes>, tempfile::TempDir) {
@@ -1469,8 +1473,15 @@ mod tests {
         assert_eq!(entries(&staged), 0, "the partial staging was removed");
         // A folder is only found too large once its files are downloaded.
         let too_large = stage_local_copies(&remotes, std::slice::from_ref(&dcim), 12);
-        assert!(matches!(too_large, Err(RemoteError::TooLarge)), "{too_large:?}");
-        assert_eq!(entries(&staged), 0, "the staging over the limit was removed");
+        assert!(
+            matches!(too_large, Err(RemoteError::TooLarge)),
+            "{too_large:?}"
+        );
+        assert_eq!(
+            entries(&staged),
+            0,
+            "the staging over the limit was removed"
+        );
         // One that works keeps its copies.
         let copies = stage_local_copies(&remotes, &[photo], 1 << 20).unwrap();
         assert_eq!(std::fs::read(&copies[0]).unwrap(), b"jpeg bytes");
@@ -1600,7 +1611,10 @@ mod tests {
         assert_eq!(staged_time("photos"), None);
         assert!(is_fetch_folder("0123456789abcdef"));
         assert!(!is_fetch_folder("staged"));
-        assert!(!is_stale(None, SystemTime::now()), "an unknown time is never old");
+        assert!(
+            !is_stale(None, SystemTime::now()),
+            "an unknown time is never old"
+        );
     }
 
     /// A connected phone shows under This PC, opening its `mtp://` location (#292).

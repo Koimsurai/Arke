@@ -3,7 +3,6 @@
 //! passwords typed this session, and a download cache for previews and opened files.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

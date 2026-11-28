@@ -619,9 +619,13 @@ fn a_drive_root_lists_the_drives(cx: &mut TestAppContext) {
         assert_eq!(v.parent_column_drives(), Some((roots, Some(1))));
     });
     // In a folder of the drive, the column lists the drive again.
-    view.update(cx, |v, cx| v.navigate(PathBuf::from(r"C:\"), NavKind::New, cx));
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\"), NavKind::New, cx);
+    });
     wait_until(cx, &view, "on C:", loaded(r"C:\"));
-    view.update(cx, |v, cx| v.navigate(PathBuf::from(r"C:\Users"), NavKind::New, cx));
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\Users"), NavKind::New, cx);
+    });
     wait_until(cx, &view, "in Users", loaded(r"C:\Users"));
     wait_until(cx, &view, "the drive listed", |v| {
         v.parent_column_drives().is_none() && v.parent_column_names() == ["Users", "c.txt"]
@@ -640,7 +644,9 @@ fn a_failed_parent_listing_shows_why_and_is_retried(cx: &mut TestAppContext) {
     wait_until(cx, &view, "load", loaded(r"C:\m\one"));
     cx.simulate_resize(gpui::size(px(1800.), px(800.)));
     cx.dispatch_action(crate::explorer::ViewColumns);
-    wait_until(cx, &view, "the failure", |v| v.parent_column_error().is_some());
+    wait_until(cx, &view, "the failure", |v| {
+        v.parent_column_error().is_some()
+    });
     redraw(cx);
     assert!(
         cx.debug_bounds("parent-column-error").is_some(),
@@ -661,7 +667,10 @@ fn a_failed_parent_listing_shows_why_and_is_retried(cx: &mut TestAppContext) {
     assert_eq!(view.update(cx, |v, _| v.parent_column_error()), None);
     redraw(cx);
     assert!(cx.debug_bounds("parent-column-error").is_none());
-    assert!(cx.debug_bounds("parent-row-1").is_some(), "the rows are back");
+    assert!(
+        cx.debug_bounds("parent-row-1").is_some(),
+        "the rows are back"
+    );
 }
 
 /// #524 (#430): an item moved into the parent column's folder shows up there.

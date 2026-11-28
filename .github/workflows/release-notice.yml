@@ -39,4 +39,4 @@ jobs:
         with:
           persist-credentials: false
       - name: comment on the fixed issues
-        run: bash .github/release-notice.sh $DRY_RUN
+        run: bash .github/release-notice.sh ${DRY_RUN:+"$DRY_RUN"}

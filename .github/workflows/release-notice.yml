@@ -4,7 +4,7 @@
 name: release notice
 
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] only our own release workflow triggers it, on a tag we pushed
     workflows: [release]
     types: [completed]
   workflow_dispatch:
@@ -39,4 +39,4 @@ jobs:
         with:
           persist-credentials: false
       - name: comment on the fixed issues
-        run: bash .github/release-notice.sh $DRY_RUN
+        run: bash .github/release-notice.sh ${DRY_RUN:+"$DRY_RUN"}

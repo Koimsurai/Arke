@@ -3,7 +3,7 @@ name: pull requests
 # Arke doesn't accept pull requests for now (see CONTRIBUTING.md): close them with a pointer to
 # issues. Nothing from the pull request is checked out or run.
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] nothing from the PR is checked out or run; the URL goes through env
     types: [opened, reopened]
 
 permissions:

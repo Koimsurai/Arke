@@ -2085,6 +2085,17 @@ mod tests {
     }
 
     #[test]
+    fn arke_temp_copies_are_not_recorded_as_recent() {
+        let temp = Path::new(r"C:\Users\u\AppData\Local\Temp");
+        assert!(in_arke_temp(&temp.join(r"Arke\remote\h\a.txt"), temp));
+        assert!(in_arke_temp(&temp.join(r"ARKE\Remote\a.txt"), temp));
+        assert!(in_arke_temp(&temp.join(r"Arke drops\1\a.txt"), temp));
+        assert!(!in_arke_temp(&temp.join("a.txt"), temp));
+        assert!(!in_arke_temp(&temp.join(r"Arkeology\a.txt"), temp));
+        assert!(!in_arke_temp(Path::new(r"C:\Docs\a.txt"), temp));
+    }
+
+    #[test]
     fn format_drive_codes_map_to_errors() {
         assert!(format_drive_result(0).is_ok());
         assert!(format_drive_result(0xFFFF_FFFE).is_ok());
@@ -2144,9 +2155,22 @@ mod tests {
 }
 
 /// Whether a file Arke just opened goes into the Shell's recent documents: not folders and not
-/// shortcuts, which are resolved to their target before opening.
+/// shortcuts, which are resolved to their target before opening, and not Arke's own temporary
+/// copies (remote downloads), whose entries would go dead once the cache is pruned.
 fn records_as_recent(path: &Path) -> bool {
-    !is_lnk(path) && !path.is_dir()
+    !is_lnk(path) && !in_arke_temp(path, &std::env::temp_dir()) && !path.is_dir()
+}
+
+/// Whether `path` is under Arke's folders in `temp`: `Arke` (holds the remote cache, see
+/// `paths::remote_cache_dir`) or `Arke drops`. Case-insensitive, as Windows paths are. Pure.
+fn in_arke_temp(path: &Path, temp: &Path) -> bool {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let path = lower(path);
+    [crate::paths::APP_DIR, "Arke drops"].iter().any(|name| {
+        let root = lower(&temp.join(name));
+        path.strip_prefix(&root)
+            .is_some_and(|rest| rest.starts_with(['\\', '/']))
+    })
 }
 
 fn is_lnk(path: &Path) -> bool {

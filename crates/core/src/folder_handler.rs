@@ -298,11 +298,34 @@ fn specs(exe: &Path, win_e: bool, mode: VerbMode) -> Vec<Spec> {
 /// The registration of Arke's COM class. COM appends `-Embedding` when it starts this.
 fn com_class_spec(exe: &Path) -> Spec {
     Spec {
-        key: classes_key(&format!(r"CLSID\{ARKE_CLSID}\LocalServer32")),
+        key: com_class_key(),
         value: "",
         data: format!(r#""{}""#, exe.display()),
         pattern: Pattern::Command(String::new()),
     }
+}
+
+/// The key of Arke's COM class registration.
+fn com_class_key() -> String {
+    classes_key(&format!(r"CLSID\{ARKE_CLSID}\LocalServer32"))
+}
+
+/// Sorts backup entries into the order they are put back in, whatever order the backup lists
+/// them in (each build writes it in its own order): every verb's command before its
+/// `DelegateExecute`, so no moment has Arke's command without the `DelegateExecute` that goes
+/// with it, and the COM class last, after every verb that may name it (#540). The sort is stable,
+/// so entries of the same kind keep their order.
+fn in_put_back_order(entries: &mut [BackupEntry]) {
+    let class = com_class_key();
+    entries.sort_by_key(|entry| {
+        if entry.key.eq_ignore_ascii_case(&class) {
+            2
+        } else if entry.value.is_empty() {
+            0
+        } else {
+            1
+        }
+    });
 }
 
 /// The Win+E verb's values.
@@ -539,8 +562,9 @@ fn drop_win_e(reg: &dyn Registry, store: &dyn BackupStore) -> Result<usize, Erro
         key.get(..class.len())
             .is_some_and(|head| head.eq_ignore_ascii_case(&class))
     };
-    let (win_e, rest): (Vec<BackupEntry>, Vec<BackupEntry>) =
+    let (mut win_e, rest): (Vec<BackupEntry>, Vec<BackupEntry>) =
         backup.entries.drain(..).partition(|e| under(&e.key));
+    in_put_back_order(&mut win_e);
     if win_e.is_empty() {
         backup.entries = rest;
         return Ok(0);
@@ -604,7 +628,7 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
     let mut done = Restored::default();
     let backup = store.load()?;
     done.had_backup = backup.is_some();
-    let (entries, created) = if let Some(b) = backup {
+    let (mut entries, created) = if let Some(b) = backup {
         (b.entries, b.created_keys)
     } else {
         // No record of the originals: assume there were none.
@@ -620,6 +644,7 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
         let created = entries.iter().flat_map(|e| chain(&e.key)).collect();
         (entries, created)
     };
+    in_put_back_order(&mut entries);
     for entry in &entries {
         check_allowed(&entry.key)?;
         match put_back(reg, entry)? {
@@ -1418,6 +1443,45 @@ mod tests {
         register_com_class(&reg, &backup, exe()).unwrap();
         restore(&reg, &backup).unwrap();
         assert!(reg.snapshot().is_empty(), "{:?}", reg.snapshot());
+    }
+
+    /// Restore puts the commands back first and the class last, whatever the backup's order
+    /// (#540).
+    #[test]
+    fn values_are_put_back_commands_first_and_the_class_last() {
+        let entry = |key: &str, value: &str| BackupEntry {
+            key: key.into(),
+            value: value.into(),
+            ours: Pattern::Delegate,
+            prior: None,
+        };
+        // As this build saves them: the class first, each DelegateExecute before its command.
+        let mut entries = vec![
+            entry(COM_SERVER, ""),
+            entry(OPEN_CMD, "DelegateExecute"),
+            entry(OPEN_CMD, ""),
+            entry(EXPLORE_CMD, "DelegateExecute"),
+            entry(EXPLORE_CMD, ""),
+            entry(WIN_E_CMD, "DelegateExecute"),
+            entry(WIN_E_CMD, ""),
+        ];
+        in_put_back_order(&mut entries);
+        let order: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|e| (e.key.as_str(), e.value.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (OPEN_CMD, ""),
+                (EXPLORE_CMD, ""),
+                (WIN_E_CMD, ""),
+                (OPEN_CMD, "DelegateExecute"),
+                (EXPLORE_CMD, "DelegateExecute"),
+                (WIN_E_CMD, "DelegateExecute"),
+                (COM_SERVER, ""),
+            ]
+        );
     }
 
     #[test]

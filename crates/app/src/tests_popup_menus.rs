@@ -891,7 +891,7 @@ fn in_a_folders_menu_t_opens_the_terminal(cx: &mut TestAppContext) {
     assert!(shell.clipboard().is_none(), "T did not cut");
 }
 
-/// The icon buttons of the menu, each with the text it draws and the key in its corner.
+/// The icon buttons of the menu, each with the text it draws and the key beside its icon.
 fn icon_row(view: &Entity<Explorer>, cx: &mut VisualTestContext) -> Vec<(String, Option<char>)> {
     view.update(cx, |v, _| {
         v.context_menu
@@ -912,10 +912,10 @@ fn drawn_in(
 }
 
 /// In Chinese the icon buttons' text is the label alone, never "剪下(T)", which crowds them. The
-/// key shows in the button's corner once the underlines do, without moving the button, and works
-/// whether it is shown or not (#422).
+/// key shows beside the top of the icon once the underlines do, with a gap, without moving the
+/// button, and works whether it is shown or not (#422).
 #[gpui::test]
-fn icon_buttons_show_their_key_in_a_corner_only_with_the_underlines(cx: &mut TestAppContext) {
+fn icon_buttons_show_their_key_beside_the_icon_only_with_the_underlines(cx: &mut TestAppContext) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
@@ -943,7 +943,7 @@ fn icon_buttons_show_their_key_in_a_corner_only_with_the_underlines(cx: &mut Tes
     let cut = drawn_in(&mut popup_cx, "menu-action-Cut").expect("Cut drawn");
     assert!(drawn_in(&mut popup_cx, "menu-action-key-Cut").is_none());
 
-    // A key pressed shows the underlines: the keys come in the corners, the text stays the label
+    // A key pressed shows the underlines: the keys come beside the icons, the text stays the label
     // and the button doesn't move or change size.
     cx.simulate_keystrokes("z");
     assert_eq!(
@@ -955,6 +955,18 @@ fn icon_buttons_show_their_key_in_a_corner_only_with_the_underlines(cx: &mut Tes
     assert!(
         key.is_contained_within(&cut),
         "the key is in the button: {key:?} {cut:?}"
+    );
+    // The icon is centered at the button's top: the key starts past its right edge, with a gap,
+    // and sits by its upper half.
+    let icon = crate::theme::icon();
+    let icon_top = cut.top() + crate::theme::s_6();
+    assert!(
+        key.left() >= cut.center().x + icon / 2. + crate::theme::s_2(),
+        "the key is right of the icon: {key:?} {cut:?}"
+    );
+    assert!(
+        key.top() < icon_top + icon / 2.,
+        "the key is by the icon's top: {key:?} {cut:?}"
     );
     cx.simulate_keystrokes("escape");
     assert!(view.update(cx, |v, _| v.context_menu.is_none()));

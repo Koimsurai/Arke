@@ -2215,6 +2215,7 @@ impl Explorer {
             .w(px(2.))
             .when(in_gap, |d| d.rounded(theme::R_FULL));
         Splitter::new("preview-resize", gpui::CursorStyle::ResizeColumn)
+            .round(in_gap)
             .dragging(self.preview_drag_start.is_some())
             // Where the press started and the width then: the drag moves the edge by as much as
             // the cursor moved, so it neither jumps to the cursor nor lags behind it.

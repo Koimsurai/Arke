@@ -2590,6 +2590,7 @@ impl Workspace {
             .rounded(theme::R_FULL)
             .bg(theme::line());
         Splitter::new("sidebar-split", gpui::CursorStyle::ResizeRow)
+            .round(true)
             .dragging(self.split_drag.is_some())
             .on_start(cx.listener(|this, e: &MouseDownEvent, _, cx| {
                 let height = this.sidebar_ui.places_scroll.bounds().size.height;

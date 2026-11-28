@@ -11,19 +11,24 @@ use gpui::{
 use super::*;
 use crate::prefs::Col;
 use crate::settings::SettingsStore;
-use crate::splitter::{DragEnd, Splitter};
+use crate::splitter::{DragEnd, Look, Splitter};
 use crate::theme;
 
 /// Far outside the window: no element is under a release there, so none of them hears it.
 const NOWHERE: Point<Pixels> = point(px(-5000.), px(-5000.));
 
-/// Whether the divider whose element id is `id` shows its hover color with the pointer at `at`.
-fn lit_at(cx: &mut VisualTestContext, id: &str, at: Point<Pixels>) -> bool {
+/// The color the divider with element id `id` paints over its line once the pointer has moved to
+/// `at` (`None`: its color at rest). Only the move itself gets the frame drawn.
+fn color_at(cx: &mut VisualTestContext, id: &str, at: Point<Pixels>) -> Option<gpui::Rgba> {
     cx.simulate_mouse_move(at, None::<MouseButton>, Modifiers::none());
-    cx.update(|window, _| window.refresh());
     cx.run_until_parked();
-    let probe: &'static str = Box::leak(format!("{id}-hover").into_boxed_str());
-    cx.debug_bounds(probe).is_some()
+    crate::splitter::painted_for_test(id).expect("the divider is drawn")
+}
+
+/// Whether the divider with element id `id` shows the hover color of `look` with the pointer at
+/// `at`.
+fn lit_at(cx: &mut VisualTestContext, id: &str, look: Look, at: Point<Pixels>) -> bool {
+    color_at(cx, id, at) == Some(crate::splitter::hover_color_for_test(look))
 }
 
 /// Every point across `hit`, at height `y`: both ends (half a pixel in) and the middle.
@@ -132,16 +137,21 @@ fn the_whole_hit_area_lights_the_line(cx: &mut TestAppContext) {
         .debug_bounds("test-divider")
         .expect("the divider is drawn");
     for at in across(hit, px(50.)) {
-        assert!(lit_at(cx, "test-divider", at), "lit at {at:?}");
+        assert!(
+            lit_at(cx, "test-divider", Look::Accent, at),
+            "lit at {at:?}"
+        );
     }
     assert!(!lit_at(
         cx,
         "test-divider",
+        Look::Accent,
         point(hit.left() - px(2.), px(50.))
     ));
     assert!(!lit_at(
         cx,
         "test-divider",
+        Look::Accent,
         point(hit.right() + px(2.), px(50.))
     ));
 }
@@ -153,12 +163,13 @@ fn the_whole_hit_area_lights_the_line(cx: &mut TestAppContext) {
 fn a_release_kept_by_another_element_ends_the_drag(cx: &mut TestAppContext) {
     let (view, cx) = harness(cx);
     let on_divider = point(px(104.), px(50.));
-    assert!(lit_at(cx, "test-divider", on_divider));
+    assert!(lit_at(cx, "test-divider", Look::Accent, on_divider));
     press(cx, on_divider);
     assert!(view.read_with(cx, |h, _| h.dragging));
-    assert!(
-        cx.debug_bounds("test-divider-hover").is_none(),
-        "no hover color while dragged"
+    assert_eq!(
+        crate::splitter::painted_for_test("test-divider"),
+        Some(Some(theme::signal())),
+        "the drag color, not the hover color, while dragged"
     );
     drag_to(cx, point(px(150.), px(50.)));
     drag_to(cx, point(px(250.), px(50.)));
@@ -252,9 +263,17 @@ fn the_sidebar_edge_lights_up_anywhere_in_its_hit_area(cx: &mut TestAppContext) 
     let hit = cx.debug_bounds("sidebar-edge").expect("the edge is drawn");
     let y = px(300.);
     for at in across(hit, y) {
-        assert!(lit_at(cx, "sidebar-edge", at), "lit at {at:?} in {hit:?}");
+        assert!(
+            lit_at(cx, "sidebar-edge", Look::Accent, at),
+            "lit at {at:?} in {hit:?}"
+        );
     }
-    assert!(!lit_at(cx, "sidebar-edge", point(hit.left() - px(6.), y)));
+    assert!(!lit_at(
+        cx,
+        "sidebar-edge",
+        Look::Accent,
+        point(hit.left() - px(6.), y)
+    ));
 }
 
 /// Released over a file row, outside the window, or found released on a move: the drag of the
@@ -303,6 +322,34 @@ fn the_sidebar_edge_stops_dragging_wherever_it_is_released(cx: &mut TestAppConte
     );
 }
 
+/// Dragged and let go with the pointer still over the edge (it moved along), with no move after:
+/// the drag ends at once, and the frame drawn for it shows the hover color, not the drag color.
+#[gpui::test]
+fn the_sidebar_edge_released_over_itself_shows_the_hover_color(cx: &mut TestAppContext) {
+    let (ws, cx) = sidebar_window(cx);
+    let hit = cx.debug_bounds("sidebar-edge").expect("the edge is drawn");
+    let start = point(hit.center().x, px(300.));
+    press(cx, start);
+    for step in 1..=30 {
+        drag_to(cx, start + point(px(step as f32 * 1.6), px(0.)));
+    }
+    assert!(sidebar_resizing(&ws, cx));
+    assert_eq!(
+        crate::splitter::painted_for_test("sidebar-edge"),
+        Some(Some(theme::signal())),
+        "the drag color while dragged"
+    );
+    let at = start + point(px(48.), px(0.));
+    release(cx, at);
+    assert!(!sidebar_resizing(&ws, cx), "released over the edge");
+    assert!((saved_sidebar_width(cx) - f32::from(at.x)).abs() < 1e-3);
+    assert_eq!(
+        crate::splitter::painted_for_test("sidebar-edge"),
+        Some(Some(theme::signal_line())),
+        "the pointer is still over the edge: the hover color"
+    );
+}
+
 // ───────────────────────── A Details column's divider ─────────────────────────
 
 fn details(cx: &mut TestAppContext) -> (Entity<Explorer>, &mut VisualTestContext) {
@@ -337,10 +384,10 @@ fn a_column_divider_lights_up_and_stops_dragging_wherever_it_is_released(cx: &mu
     let hit = cx.debug_bounds(id).expect("Modified's divider is drawn");
     let y = hit.center().y;
     for at in across(hit, y) {
-        assert!(lit_at(cx, id, at), "lit at {at:?} in {hit:?}");
+        assert!(lit_at(cx, id, Look::Subtle, at), "lit at {at:?} in {hit:?}");
     }
     assert!(
-        !lit_at(cx, id, point(hit.left() - px(3.), y)),
+        !lit_at(cx, id, Look::Subtle, point(hit.left() - px(3.), y)),
         "not over the title"
     );
 
@@ -411,10 +458,18 @@ fn the_preview_edge_lights_up_and_stops_dragging_wherever_it_is_released(cx: &mu
         .expect("the preview's edge is drawn");
     let y = hit.center().y;
     for at in across(hit, y) {
-        assert!(lit_at(cx, "preview-resize", at), "lit at {at:?} in {hit:?}");
+        assert!(
+            lit_at(cx, "preview-resize", Look::Accent, at),
+            "lit at {at:?} in {hit:?}"
+        );
     }
     assert!(
-        !lit_at(cx, "preview-resize", point(hit.left() - px(3.), y)),
+        !lit_at(
+            cx,
+            "preview-resize",
+            Look::Accent,
+            point(hit.left() - px(3.), y)
+        ),
         "not over the list"
     );
 

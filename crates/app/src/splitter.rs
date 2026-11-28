@@ -5,30 +5,36 @@
 //! Each owner keeps what its drag means: where it starts from, the size it sets, the limits, what
 //! a double-click resets and what is saved when it ends. [`Splitter`] does what they share, the
 //! same way for all of them:
-//! - the whole hit area lights the line up under the pointer, not only the thin line itself;
+//! - the whole hit area lights the line up under the pointer, not only the thin line itself. The
+//!   handle watches its hit area itself and paints the line's color: no group hover styles, whose
+//!   redraws depend on which element happens to notify;
 //! - a press starts the drag (a double-click resets instead) and goes no further;
 //! - moves report the pointer, and the cursor stays the resize cursor all over the window;
 //! - the release ends it wherever the pointer is. The handle being dragged listens for it in the
 //!   capture phase, so an element under the pointer that keeps the release to itself (it stops
 //!   it, or covers what is behind it) can't keep the drag going, and a move with the button up
-//!   (released outside the window) ends it too.
+//!   (released outside the window) ends it too. Each end redraws the window.
 //!
-//! The window-wide listeners exist only while a drag is under way, painted by the dragged handle:
-//! a divider at rest costs what any element with a mouse listener costs.
+//! The window-wide drag listeners exist only while a drag is under way, painted by the dragged
+//! handle. At rest a divider has its mouse listeners and one hitbox watching the pointer, which
+//! asks for a frame only when the pointer enters or leaves it.
+//!
+//! `RUST_LOG=arke::splitter=debug` logs each press, each end (and which path ended it) and each
+//! frame drawn while a drag is under way.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, CursorStyle, DispatchPhase, Div, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Stateful, Styled, Window, canvas,
-    prelude::FluentBuilder,
+    App, CursorStyle, DispatchPhase, Div, ElementId, HitboxBehavior, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Rgba,
+    Stateful, Styled, Window, canvas, prelude::FluentBuilder, px,
 };
 
 use crate::theme;
 
-/// The group every hit area forms, so its line lights up wherever the pointer is in it. A line
-/// looks up its nearest ancestor of this name, so one name serves all dividers.
-const GROUP: &str = "splitter";
+/// Log target of the dividers' debug lines.
+const LOG: &str = "arke::splitter";
 
 /// The end of a drag, passed to [`Splitter::on_end`].
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +60,7 @@ pub(crate) struct Splitter {
     id: ElementId,
     cursor: CursorStyle,
     look: Look,
+    round: bool,
     dragging: bool,
     on_start: Option<Handler<MouseDownEvent>>,
     on_double_click: Option<Handler<MouseDownEvent>>,
@@ -69,6 +76,7 @@ impl Splitter {
             id: id.into(),
             cursor,
             look: Look::Accent,
+            round: false,
             dragging: false,
             on_start: None,
             on_double_click: None,
@@ -81,6 +89,14 @@ impl Splitter {
     #[must_use]
     pub(crate) const fn look(mut self, look: Look) -> Self {
         self.look = look;
+        self
+    }
+
+    /// Whether the hover and drag colors have round ends, like a line drawn with
+    /// `rounded(R_FULL)`.
+    #[must_use]
+    pub(crate) const fn round(mut self, round: bool) -> Self {
+        self.round = round;
         self
     }
 
@@ -136,12 +152,13 @@ impl Splitter {
 
     /// The divider: `hit`, the area that takes the pointer (laid out by the owner), around
     /// `line`, what is drawn (with its color at rest, if it has one). The line takes the hover and
-    /// drag colors of the [`Look`].
+    /// drag colors of the [`Look`], painted over it.
     pub(crate) fn render(self, hit: Div, line: Div) -> Stateful<Div> {
         let Self {
             id,
             cursor,
             look,
+            round,
             dragging,
             on_start,
             on_double_click,
@@ -152,28 +169,35 @@ impl Splitter {
             Look::Accent => (theme::signal_line(), Some(theme::signal())),
             Look::Subtle => (theme::text_subtle(), None),
         };
-        // With an id, the line keeps its hover state and is drawn again as soon as the pointer
-        // enters or leaves the hit area.
-        let line = line
-            .id("splitter-line")
-            .when_some(active.filter(|_| dragging), gpui::Styled::bg)
-            .when(!dragging, |d| d.group_hover(GROUP, move |s| s.bg(hover)));
-        #[cfg(test)]
-        let probe = Some(hover_probe(&id, dragging));
-        #[cfg(not(test))]
-        let probe: Option<Stateful<Div>> = None;
+        if dragging {
+            log::debug!(target: LOG, "{id}: drawn with a drag under way");
+        }
+        // Whether the pointer is over the hit area, found while painting it, before the line.
+        let hovered = Rc::new(Cell::new(false));
+        let line = line.child(line_color(LineColor {
+            hovered: Rc::clone(&hovered),
+            dragging,
+            hover,
+            active,
+            round,
+            #[cfg(test)]
+            name: id.to_string(),
+        }));
         let released = on_end.clone();
+        let (down_id, up_id) = (id.clone(), id.clone());
         hit.debug_selector(|| id.to_string())
-            .id(id)
-            .group(GROUP)
+            .id(id.clone())
             .cursor(cursor)
             .on_mouse_down(MouseButton::Left, move |e, window, cx| {
                 cx.stop_propagation();
-                let handler = if crate::press_guard::is_double_click(e.click_count) {
-                    &on_double_click
-                } else {
-                    &on_start
-                };
+                let double = crate::press_guard::is_double_click(e.click_count);
+                log::debug!(
+                    target: LOG,
+                    "{down_id}: press ({} clicks): {}",
+                    e.click_count,
+                    if double { "double-click" } else { "drag starts" }
+                );
+                let handler = if double { &on_double_click } else { &on_start };
                 if let Some(f) = handler {
                     f(e, window, cx);
                 }
@@ -183,18 +207,92 @@ impl Splitter {
             // A quick click can be released before the frame that would listen to the window.
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                 if let Some(f) = &released {
+                    log::debug!(target: LOG, "{up_id}: release over the handle: end");
                     f(&DragEnd, window, cx);
+                    window.refresh();
                 }
             })
+            .child(hover_watch(hovered))
             .child(line)
-            .children(probe)
-            .when(dragging, |d| d.child(drag_listeners(cursor, on_drag, on_end)))
+            .when(dragging, |d| {
+                d.child(drag_listeners(id, cursor, on_drag, on_end))
+            })
     }
+}
+
+/// Watches whether the pointer is over the hit area it fills: its own hitbox (so whatever covers
+/// the divider also covers this), read while painting into `hovered` for the line painted after
+/// it, and a frame asked for when the pointer enters or leaves it.
+fn hover_watch(hovered: Rc<Cell<bool>>) -> impl IntoElement {
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_, hitbox, window, cx| {
+            let now = hitbox.is_hovered(window) && !cx.has_active_drag();
+            hovered.set(now);
+            let id = hitbox.id;
+            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture
+                    && (id.is_hovered(window) && !cx.has_active_drag()) != now
+                {
+                    window.refresh();
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// What the line shows over its color at rest.
+struct LineColor {
+    hovered: Rc<Cell<bool>>,
+    dragging: bool,
+    hover: Rgba,
+    active: Option<Rgba>,
+    round: bool,
+    /// Tests: the divider's element id, under which the painted color is noted.
+    #[cfg(test)]
+    name: String,
+}
+
+/// Paints the line's hover or drag color over the whole line (none at rest).
+fn line_color(look: LineColor) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            let color = if look.dragging {
+                look.active
+            } else if look.hovered.get() {
+                Some(look.hover)
+            } else {
+                None
+            };
+            #[cfg(test)]
+            PAINTED.with_borrow_mut(|painted| {
+                painted.insert(look.name.clone(), color);
+            });
+            if let Some(color) = color {
+                let radius = if look.round {
+                    bounds.size.width.min(bounds.size.height) / 2.
+                } else {
+                    px(0.)
+                };
+                window.paint_quad(gpui::fill(bounds, color).corner_radii(radius));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// While a drag is under way: the resize cursor all over the window, and the moves and the
 /// release wherever they happen, heard before any element can stop them.
 fn drag_listeners(
+    id: ElementId,
     cursor: CursorStyle,
     on_drag: Option<Handler<MouseMoveEvent>>,
     on_end: Option<Handler<DragEnd>>,
@@ -204,12 +302,24 @@ fn drag_listeners(
         move |_, (), window, _| {
             window.set_window_cursor_style(cursor);
             let released = on_end.clone();
+            let up_id = id.clone();
             window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture
-                    && e.button == MouseButton::Left
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                log::debug!(
+                    target: LOG,
+                    "{up_id}: {:?} release at {:?} ({} clicks) heard by the window: {}",
+                    e.button,
+                    e.position,
+                    e.click_count,
+                    if e.button == MouseButton::Left { "end" } else { "ignored" }
+                );
+                if e.button == MouseButton::Left
                     && let Some(f) = &released
                 {
                     f(&DragEnd, window, cx);
+                    window.refresh();
                 }
             });
             window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
@@ -222,7 +332,9 @@ fn drag_listeners(
                     }
                 } else if let Some(f) = &on_end {
                     // Released where the window didn't see it.
+                    log::debug!(target: LOG, "{id}: move with the button up: end");
                     f(&DragEnd, window, cx);
+                    window.refresh();
                 }
             });
         },
@@ -231,16 +343,29 @@ fn drag_listeners(
     .size_0()
 }
 
-/// Tests: an element drawn only while the line shows its hover color, found as `<id>-hover` with
-/// `debug_bounds`. It lights up by the same rule as the line.
 #[cfg(test)]
-fn hover_probe(id: &ElementId, dragging: bool) -> Stateful<Div> {
-    let selector = format!("{id}-hover");
-    gpui::div()
-        .id("splitter-hover-probe")
-        .absolute()
-        .size_0()
-        .invisible()
-        .when(!dragging, |d| d.group_hover(GROUP, gpui::Styled::visible))
-        .child(gpui::div().size_0().debug_selector(move || selector))
+thread_local! {
+    /// Tests: the color each divider's line was last painted with (`None`: its color at rest).
+    static PAINTED: std::cell::RefCell<std::collections::HashMap<String, Option<Rgba>>> =
+        std::cell::RefCell::default();
+}
+
+/// Tests: the color the divider with element id `id` last painted over its line: `Some(None)`
+/// for none (its color at rest), `None` if it hasn't been painted.
+#[cfg(test)]
+#[allow(
+    clippy::option_option,
+    reason = "tests tell \"not drawn\" apart from \"drawn with no color\""
+)]
+pub(crate) fn painted_for_test(id: &str) -> Option<Option<Rgba>> {
+    PAINTED.with_borrow(|painted| painted.get(id).copied())
+}
+
+/// The color [`painted_for_test`] gives while the pointer is over a divider of `look`.
+#[cfg(test)]
+pub(crate) fn hover_color_for_test(look: Look) -> Rgba {
+    match look {
+        Look::Accent => theme::signal_line(),
+        Look::Subtle => theme::text_subtle(),
+    }
 }

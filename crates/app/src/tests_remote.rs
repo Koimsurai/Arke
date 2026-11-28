@@ -492,7 +492,10 @@ fn a_folder_changed_outside_arke_is_relisted_where_it_shows(cx: &mut TestAppCont
     let (ws, cx) = setup_workspace(cx, Arc::clone(&fs), r"C:\o");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\o"));
-    assert!(view.update(cx, |v, _| names(v)).contains(&"moved".to_owned()));
+    assert!(
+        view.update(cx, |v, _| names(v))
+            .contains(&"moved".to_owned())
+    );
 
     // Gone without a change notification, as on a server.
     fs.remove(Path::new(r"C:\o"), "moved");
@@ -500,10 +503,13 @@ fn a_folder_changed_outside_arke_is_relisted_where_it_shows(cx: &mut TestAppCont
         .update(|cx| crate::workspace::reload_remote_everywhere(Path::new(r"C:\elsewhere"), cx));
     cx.run_until_parked();
     assert!(
-        view.update(cx, |v, _| names(v)).contains(&"moved".to_owned()),
+        view.update(cx, |v, _| names(v))
+            .contains(&"moved".to_owned()),
         "a pane showing another folder is left alone"
     );
     cx.cx
         .update(|cx| crate::workspace::reload_remote_everywhere(Path::new(r"C:\o"), cx));
-    wait_until(cx, &view, "relisted", |v| !names(v).contains(&"moved".to_owned()));
+    wait_until(cx, &view, "relisted", |v| {
+        !names(v).contains(&"moved".to_owned())
+    });
 }

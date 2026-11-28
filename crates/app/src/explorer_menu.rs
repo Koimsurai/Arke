@@ -783,7 +783,7 @@ const fn button_text_access(access: Option<Access>) -> Option<Access> {
     }
 }
 
-/// The key an icon button shows in its corner: one that isn't a letter of its label, and only
+/// The key an icon button shows beside its icon: one that isn't a letter of its label, and only
 /// while the underlines are shown.
 const fn button_key(access: Option<Access>, cues: Cues) -> Option<char> {
     match access {
@@ -792,21 +792,17 @@ const fn button_key(access: Option<Access>, cues: Cues) -> Option<char> {
     }
 }
 
-/// [`button_key`] drawn as a small key cap in the icon button's top right corner. It is laid
-/// over the button, so the button keeps its size and nothing moves when it comes and goes.
+/// [`button_key`] drawn as a small muted letter beside the top of the icon button's icon, like a
+/// superscript, with no box. It is laid over the button, so the button keeps its size and nothing
+/// moves when it comes and goes. Its place is set against the icon (a box the icon's size): the
+/// gap after it plus the widest letter (about 10 px) fit in the space beside the icon even in the
+/// narrowest button, about 45 px with five in a 240 px menu, so it never reaches the next button.
 fn key_badge(key: char, enabled: bool, command: MenuCommand) -> AnyElement {
     div()
         .debug_selector(move || format!("menu-action-key-{command:?}"))
         .absolute()
-        .top(theme::s_2())
-        .right(theme::s_2())
-        .min_w(theme::s_12())
-        .px(theme::s_2())
-        .flex()
-        .justify_center()
-        .rounded(theme::r_4())
-        .border_1()
-        .border_color(theme::line_strong())
+        .top(-theme::s_2())
+        .left(theme::icon() + theme::s_4())
         .text_size(theme::fs_11())
         .line_height(gpui::relative(theme::LH_TIGHT))
         .text_color(if enabled {
@@ -1270,7 +1266,7 @@ impl ContextMenu {
     }
 
     /// Test helper: the icon buttons of the innermost level, each with the text it draws and the
-    /// key shown in its corner.
+    /// key shown beside its icon.
     #[cfg(test)]
     pub(crate) fn icon_row_for_test(&self) -> Vec<(String, Option<char>)> {
         self.level(self.open.len())
@@ -3974,7 +3970,6 @@ impl Explorer {
                     .id(("menu-action", ix))
                     .debug_selector(move || format!("menu-action-{command:?}"))
                     .a11y_menu_item(item.label.clone(), enabled, false, false)
-                    .relative()
                     .flex_1()
                     .py(theme::s_6())
                     .flex()
@@ -4000,25 +3995,30 @@ impl Explorer {
                             ))
                     })
                     .when(!enabled, |d| d.text_color(theme::text_disabled()))
+                    // The icon in a box of its size, which the key is placed against. Every
+                    // icon button has one (`decorate`).
                     .children(item.glyph.map(|glyph| {
-                        svg()
-                            .path(glyph.path())
+                        div()
+                            .relative()
+                            .flex_none()
                             .size(theme::icon())
-                            .text_color(if enabled {
-                                theme::text()
-                            } else {
-                                theme::text_disabled()
-                            })
+                            .child(svg().path(glyph.path()).size(theme::icon()).text_color(
+                                if enabled {
+                                    theme::text()
+                                } else {
+                                    theme::text_disabled()
+                                },
+                            ))
+                            .children(
+                                button_key(item.access, menu.cues)
+                                    .map(|key| key_badge(key, enabled, command)),
+                            )
                     }))
                     .child(access_text(
                         item.label.clone(),
                         button_text_access(item.access),
                         menu.cues,
                     ))
-                    .children(
-                        button_key(item.access, menu.cues)
-                            .map(|key| key_badge(key, enabled, command)),
-                    )
             }))
             .into_any_element()
     }
@@ -5265,18 +5265,18 @@ mod access_tests {
     fn icon_buttons_never_write_their_key_after_the_text() {
         let off = Cues::opened(false, false);
         let on = Cues::opened(true, false);
-        // The CJK form: no "(N)" in the text; the corner shows N, with the underlines only.
+        // The CJK form: no "(N)" in the text; N shows beside the icon, with the underlines only.
         let cjk = Some(derive_access('n', "新增資料夾", None, true));
         assert_eq!(button_text_access(cjk), None);
         assert_eq!(
             (button_key(cjk, off), button_key(cjk, on)),
             (None, Some('N'))
         );
-        // A letter of the label: underlined in it, as in the rows, and no corner key.
+        // A letter of the label: underlined in it, as in the rows, and nothing beside the icon.
         let latin = Some(derive_access('n', "New folder", None, false));
         assert_eq!(button_text_access(latin), latin);
         assert_eq!(button_key(latin, on), None);
-        // A Latin label without the letter goes to the corner too.
+        // A Latin label without the letter shows it beside the icon too.
         let missing = Some(derive_access('x', "Delete", None, false));
         assert_eq!(button_text_access(missing), None);
         assert_eq!(button_key(missing, on), Some('X'));

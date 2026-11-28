@@ -259,20 +259,22 @@ fn classes_key(rest: &str) -> String {
 
 /// Every value Arke writes for the exe at `exe`; the Win+E class only with `win_e`. `mode` says
 /// how the folder verbs reach Arke; the COM class's registration is written either way, so
-/// whether COM works can be checked before the verbs rely on it.
+/// whether COM works can be checked before the verbs rely on it. The values are written in this
+/// order: in COM mode each verb's `DelegateExecute` comes before its command, so no moment has
+/// Arke's command under the verb without Arke's class id next to it (#540).
 fn specs(exe: &Path, win_e: bool, mode: VerbMode) -> Vec<Spec> {
     let mut out = Vec::new();
     for verb in FOLDER_VERBS {
         let key = classes_key(&format!(r"Folder\shell\{verb}\command"));
-        out.push(Spec {
+        let command = Spec {
             key: key.clone(),
             value: "",
             data: format!(r#""{}" "%1""#, exe.display()),
             pattern: Pattern::Command(r#" "%1""#.into()),
-        });
+        };
         // Empty: the shell runs the default value instead of the stock handler. Arke's class id:
         // the shell calls Arke over COM; the command stays for callers that ignore it.
-        out.push(Spec {
+        let delegate = Spec {
             key,
             value: "DelegateExecute",
             data: match mode {
@@ -280,7 +282,11 @@ fn specs(exe: &Path, win_e: bool, mode: VerbMode) -> Vec<Spec> {
                 VerbMode::Command => String::new(),
             },
             pattern: Pattern::Delegate,
-        });
+        };
+        match mode {
+            VerbMode::Com => out.extend([delegate, command]),
+            VerbMode::Command => out.extend([command, delegate]),
+        }
     }
     out.push(com_class_spec(exe));
     if win_e {

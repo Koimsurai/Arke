@@ -154,10 +154,10 @@ impl Handler {
     }
 }
 
-/// How the folder verbs reach Arke when COM is not known to: the check failed (DCOM refuses a
-/// per-user class whose exe is in a folder an administrator created, such as a per-machine install
-/// under Program Files; see `win_folder_com`), or this Arke is not resident and cannot check while
-/// the verbs aren't using COM yet. For now they run the command, which takes an empty
+/// How the folder verbs reach Arke when COM is not known to: the check failed (DCOM was seen to
+/// refuse the per-user class on some per-machine installs under Program Files; see
+/// `win_folder_com`), or this Arke is not resident and cannot check while the verbs aren't using
+/// COM yet. For now they run the command, which takes an empty
 /// `DelegateExecute`: the shape some antivirus programs flag (#540). This is the one place to
 /// change once per-machine installs have been tried on a real machine.
 const fn verbs_without_com() -> VerbMode {
@@ -399,6 +399,30 @@ mod tests {
                 })
                 .count()
         }
+
+        /// How many recorded states had a folder verb with a command but without Arke's class id
+        /// as its `DelegateExecute`.
+        fn commands_without_arkes_delegate(&self) -> usize {
+            let verbs = [DIR_CMD.to_lowercase(), EXPLORE_CMD.to_lowercase()];
+            self.states
+                .lock()
+                .iter()
+                .filter(|state| {
+                    verbs.iter().any(|verb| {
+                        let value = |wanted: &str| {
+                            state
+                                .iter()
+                                .find(|(key, name, _)| key == verb && name == wanted)
+                                .map(|(_, _, text)| text.as_str())
+                        };
+                        value("").is_some()
+                            && value("delegateexecute").is_none_or(|id| {
+                                !id.eq_ignore_ascii_case(folder_handler::ARKE_CLSID)
+                            })
+                    })
+                })
+                .count()
+        }
     }
 
     impl Registry for Recording {
@@ -436,8 +460,9 @@ mod tests {
 
     /// When the check passes, the folder verbs go straight to Arke's class id: turning the setting
     /// on, repairing a moved exe and repairing a half-missing registration never leave an empty
-    /// `DelegateExecute` on them, the check runs with the class registered and the verbs untouched,
-    /// and turning off still restores exactly (#540).
+    /// `DelegateExecute` on them, nor a command without Arke's class id next to it; the check runs
+    /// with the class registered and the verbs untouched, and turning off still restores exactly
+    /// (#540).
     #[test]
     fn a_passing_check_never_leaves_an_empty_delegate_on_the_folder_verbs() {
         let rec = Arc::new(Recording::default());
@@ -518,6 +543,12 @@ mod tests {
 
         assert!(!rec.states.lock().is_empty(), "writes were recorded");
         assert_eq!(rec.empty_delegates(), 0, "{:?}", rec.states.lock());
+        assert_eq!(
+            rec.commands_without_arkes_delegate(),
+            0,
+            "a command never sits there without Arke's class id: {:?}",
+            rec.states.lock()
+        );
 
         handler(r"E:\New\arke.exe").sync(false, false);
         assert_eq!(rec.reg.snapshot(), before, "turning off restores exactly");

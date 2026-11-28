@@ -6,19 +6,24 @@
 //! File Explorer's and Finder's toolbars do; the path bar keeps every level until nothing else is
 //! left to give:
 //!
-//! 1. everything: the view switcher, Sort, the summary with the total size, every button;
+//! 1. everything: the view switcher, Sort, the item count, synchronized browsing and compare
+//!    (split view), the summary with the total size, every button;
 //! 2. the view switcher (Details, Icons, Columns and its chevron) gives way to the view options
 //!    button alone, which shows the current view and opens the same flyout, as in split panes;
 //! 3. Sort moves into "⋯" (its menu has "Sort by", the current column and direction checked);
-//! 4. the selection's summary drops the size, then shrinks to the pill "● 3" (its tooltip has the
+//! 4. with nothing selected, the item count goes: it only tells, so it isn't moved anywhere;
+//! 5. synchronized browsing and compare move into "⋯", checked while on;
+//! 6. the selection's summary drops the size, then shrinks to the pill "● 3" (its tooltip has the
 //!    rest);
-//! 5. Copy to/Move to the other side drop their labels, then the selection's buttons move into
+//! 7. Copy to/Move to the other side drop their labels, then the selection's buttons move into
 //!    "⋯" one at a time, the least used first and Delete last; × goes with the last of them;
-//! 6. with only "● 3 ⋯" left, the path bar collapses levels into "…".
+//! 8. with all of that folded, the path bar collapses levels into "…".
 //!
-//! The view options button, the preview and split toggles and the dual pane toggles never fold:
-//! the flyout holds settings found nowhere else in the row's menus, and a toggle that changes the
-//! pane's width would fold away under the pointer that pressed it.
+//! "⋯" is one per row: the selection's, or with nothing selected one among the view tools. The
+//! view options button, new folder, paste and the preview and split toggles never fold: the
+//! flyout holds settings found nowhere else in the row's menus, and a toggle that changes the
+//! pane's width would fold away under the pointer that pressed it (and is the way out of a narrow
+//! pane).
 //!
 //! Text is measured by the caller; this only adds widths up.
 
@@ -68,8 +73,9 @@ pub(super) struct SelectionLayout {
     pub(super) hidden: usize,
     /// How many buttons there are.
     pub(super) buttons: usize,
-    /// Sort is in the selection's "⋯" too, which shows even with every button drawn.
-    pub(super) sort: bool,
+    /// Some of the view tools (Sort, the dual pane toggles) are in the selection's "⋯" too,
+    /// which shows even with every button drawn.
+    pub(super) tools: bool,
 }
 
 impl SelectionLayout {
@@ -78,9 +84,9 @@ impl SelectionLayout {
         ix >= self.hidden && ix < self.buttons
     }
 
-    /// "⋯" is drawn: some button, or Sort, is in it.
+    /// "⋯" is drawn: some button, or some view tool, is in it.
     pub(super) const fn more(&self) -> bool {
-        self.hidden > 0 || self.sort
+        self.hidden > 0 || self.tools
     }
 
     /// Every button is in "⋯": only "● 3 ⋯" is drawn (× goes with the last button).
@@ -111,9 +117,9 @@ impl SelectionParts {
     }
 
     /// The selection's layouts from the roomiest to the narrowest, each one step shorter than the
-    /// one before: the summary shortens, the labels go, then the buttons one by one. `sort`: Sort
-    /// is in "⋯".
-    fn steps(&self, sort: bool) -> impl Iterator<Item = SelectionLayout> + use<> {
+    /// one before: the summary shortens, the labels go, then the buttons one by one. `tools`:
+    /// some view tools are in "⋯".
+    fn steps(&self, tools: bool) -> impl Iterator<Item = SelectionLayout> + use<> {
         let buttons = self.buttons.len();
         let labels = self.labels > 0.;
         let layout = move |summary, labels, hidden| SelectionLayout {
@@ -121,7 +127,7 @@ impl SelectionParts {
             labels,
             hidden,
             buttons,
-            sort,
+            tools,
         };
         [
             layout(Summary::Full, labels, 0),
@@ -134,24 +140,24 @@ impl SelectionParts {
     }
 
     /// Everything drawn.
-    const fn everything(&self, sort: bool) -> SelectionLayout {
+    const fn everything(&self, tools: bool) -> SelectionLayout {
         SelectionLayout {
             summary: Summary::Full,
             labels: self.labels > 0.,
             hidden: 0,
             buttons: self.buttons.len(),
-            sort,
+            tools,
         }
     }
 
     /// Just "● 3 ⋯".
-    const fn folded(&self, sort: bool) -> SelectionLayout {
+    const fn folded(&self, tools: bool) -> SelectionLayout {
         SelectionLayout {
             summary: Summary::Pill,
             labels: false,
             hidden: self.buttons.len(),
             buttons: self.buttons.len(),
-            sort,
+            tools,
         }
     }
 }
@@ -159,9 +165,10 @@ impl SelectionParts {
 /// What the row shows between the path bar and the view tools.
 #[derive(Clone, Debug)]
 pub(super) enum Info {
-    /// Nothing selected: the folder's item count, paste and new folder, as wide as they were
-    /// drawn. They don't fold.
-    Folder(f32),
+    /// Nothing selected: the folder's item count, with the gap after it, which hides, and the
+    /// rest (paste, new folder, the comparison's chip), as wide as it was drawn, which doesn't
+    /// fold.
+    Folder { count: f32, rest: f32 },
     /// The selection, which gives way in steps.
     Selection(SelectionParts),
 }
@@ -176,6 +183,9 @@ pub(super) struct RowParts {
     pub(super) view: f32,
     /// Sort, with the gap after it (zero: there is none, while searching).
     pub(super) sort: f32,
+    /// Synchronized browsing and compare, with the gap before them (zero: there are none, but in
+    /// a split tab's last pane).
+    pub(super) toggles: f32,
     /// "⋯" among the view tools, with the gap after it, where nothing is selected to hold it.
     pub(super) more: f32,
     pub(super) info: Info,
@@ -188,26 +198,41 @@ pub(super) struct RowLayout {
     pub(super) switcher: bool,
     /// Sort is in "⋯".
     pub(super) sort_folded: bool,
+    /// The item count is left out.
+    pub(super) count_hidden: bool,
+    /// Synchronized browsing and compare are in "⋯".
+    pub(super) toggles_folded: bool,
     /// The selection's layout; `None` with nothing selected.
     pub(super) selection: Option<SelectionLayout>,
-    /// Even everything folded leaves the path bar short of its whole width: it collapses levels
-    /// (from its own slot's width, as it would anyway).
+    /// Even everything folded leaves the path bar short of its whole width: it collapses levels.
+    /// The path bar takes this, the one decision, rather than making its own from its slot.
     pub(super) collapse: bool,
 }
 
 impl RowLayout {
-    /// "⋯" among the view tools: Sort is in it, and no selection's "⋯" holds it.
+    /// Some of the view tools are in "⋯".
+    pub(super) const fn tools_folded(&self) -> bool {
+        self.sort_folded || self.toggles_folded
+    }
+
+    /// "⋯" among the view tools: some of them are in it, and no selection's "⋯" holds them.
     pub(super) const fn tools_more(&self) -> bool {
-        self.sort_folded && self.selection.is_none()
+        self.tools_folded() && self.selection.is_none()
     }
 }
 
 impl RowParts {
     /// How wide the row's info (item count or selection) and its foldable view tools ("⋯", Sort,
-    /// the view switcher or button) are drawn in `layout`.
+    /// the view switcher or button, the dual pane toggles) are drawn in `layout`.
     pub(super) fn widths(&self, layout: &RowLayout) -> (f32, f32) {
         let info = match (&self.info, &layout.selection) {
-            (Info::Folder(width), _) => *width,
+            (Info::Folder { count, rest }, _) => {
+                if layout.count_hidden {
+                    *rest
+                } else {
+                    count + rest
+                }
+            }
             (Info::Selection(parts), Some(selection)) => parts.width(selection),
             (Info::Selection(_), None) => 0.,
         };
@@ -217,42 +242,63 @@ impl RowParts {
             self.view
         };
         let sort = if layout.sort_folded { 0. } else { self.sort };
+        let toggles = if layout.toggles_folded {
+            0.
+        } else {
+            self.toggles
+        };
         let more = if layout.tools_more() { self.more } else { 0. };
-        (info, view + sort + more)
+        (info, view + sort + toggles + more)
     }
 
     /// Whether `layout` leaves the path bar `path` wide (every level) out of `room`, as the row is
     /// laid out: in whole pixels, so the info and the view tools may each take up to their width
-    /// rounded up, and the path bar collapses levels unless its slot holds `path` exactly.
+    /// rounded up, and the path bar keeps its levels when its slot holds `path` rounded up.
     pub(super) fn fits(&self, layout: &RowLayout, path: f32, room: f32) -> bool {
         let (info, tools) = self.widths(layout);
         info.ceil() + tools.ceil() + path.ceil() <= room
+    }
+
+    /// The item count is there to hide.
+    const fn has_count(&self) -> bool {
+        matches!(self.info, Info::Folder { count, .. } if count > 0.)
+    }
+
+    /// The row with `sort`, `count` and `toggles` folded as far as they are there, and the
+    /// selection, if any, all drawn.
+    const fn tools(&self, sort: bool, count: bool, toggles: bool) -> RowLayout {
+        let sort_folded = sort && self.sort > 0.;
+        let toggles_folded = toggles && self.toggles > 0.;
+        RowLayout {
+            switcher: false,
+            sort_folded,
+            count_hidden: count && self.has_count(),
+            toggles_folded,
+            selection: match &self.info {
+                Info::Folder { .. } => None,
+                Info::Selection(parts) => Some(parts.everything(sort_folded || toggles_folded)),
+            },
+            collapse: false,
+        }
     }
 
     /// Everything drawn.
     pub(super) const fn everything(&self) -> RowLayout {
         RowLayout {
             switcher: self.switcher > self.view,
-            sort_folded: false,
-            selection: match &self.info {
-                Info::Folder(_) => None,
-                Info::Selection(parts) => Some(parts.everything(false)),
-            },
-            collapse: false,
+            ..self.tools(false, false, false)
         }
     }
 
     /// Everything that folds, folded.
     pub(super) const fn folded(&self) -> RowLayout {
-        let sort = self.sort > 0.;
+        let row = self.tools(true, true, true);
         RowLayout {
-            switcher: false,
-            sort_folded: sort,
             selection: match &self.info {
-                Info::Folder(_) => None,
-                Info::Selection(parts) => Some(parts.folded(sort)),
+                Info::Folder { .. } => None,
+                Info::Selection(parts) => Some(parts.folded(row.tools_folded())),
             },
-            collapse: false,
+            ..row
         }
     }
 }
@@ -261,24 +307,21 @@ impl RowParts {
 /// out of the `room` the path bar, the info and the foldable view tools share, or everything
 /// folded with the path bar collapsing levels when not even that does.
 pub(super) fn row_layout(room: f32, path: f32, parts: &RowParts) -> RowLayout {
-    let sort = parts.sort > 0.;
-    let row = |sort_folded| RowLayout {
-        switcher: false,
-        sort_folded,
-        selection: match &parts.info {
-            Info::Folder(_) => None,
-            Info::Selection(selection) => Some(selection.everything(sort_folded)),
-        },
-        collapse: false,
-    };
-    let tools = [parts.everything(), row(false), row(sort)];
+    let tools = [
+        parts.everything(),
+        parts.tools(false, false, false),
+        parts.tools(true, false, false),
+        parts.tools(true, true, false),
+        parts.tools(true, true, true),
+    ];
+    let last = parts.tools(true, true, true);
     let selection = match &parts.info {
-        Info::Folder(_) => None,
-        Info::Selection(selection) => Some(selection.steps(sort).skip(1)),
+        Info::Folder { .. } => None,
+        Info::Selection(selection) => Some(selection.steps(last.tools_folded()).skip(1)),
     };
     let selection = selection.into_iter().flatten().map(|selection| RowLayout {
         selection: Some(selection),
-        ..row(sort)
+        ..last
     });
     tools
         .into_iter()
@@ -322,6 +365,7 @@ mod tests {
             switcher: 30.,
             view: 30.,
             sort: 0.,
+            toggles: 0.,
             more: 0.,
             info: Info::Selection(parts.clone()),
         }
@@ -340,7 +384,7 @@ mod tests {
             labels: false,
             hidden,
             buttons: 5,
-            sort: false,
+            tools: false,
         };
         (selection, false)
     }
@@ -455,6 +499,7 @@ mod tests {
             switcher: 114.,
             view: 42.,
             sort: 46.,
+            toggles: 0.,
             more: 30.,
             info: Info::Selection(measured()),
         };
@@ -497,8 +542,12 @@ mod tests {
             switcher: 114.,
             view: 42.,
             sort: 46.,
+            toggles: 0.,
             more: 30.,
-            info: Info::Folder(150.),
+            info: Info::Folder {
+                count: 0.,
+                rest: 150.,
+            },
         };
         let at = |room: f32| row_layout(room, PATH, &parts);
         // 150 + 114 + 46 + 492.
@@ -527,11 +576,15 @@ mod tests {
             switcher: 114.,
             view: 42.,
             sort: 46.,
+            toggles: 0.,
             more: 30.,
             info,
         };
         // 1251 px, nothing selected: 533 + 165 + 114 + 46.
-        let parts = tools(Info::Folder(165.));
+        let parts = tools(Info::Folder {
+            count: 0.,
+            rest: 165.,
+        });
         let row = row_layout(858., 532.6, &parts);
         assert_eq!(row, parts.everything());
         assert!(!row.collapse);
@@ -546,6 +599,50 @@ mod tests {
         let selection = row.selection.expect("a selection");
         assert_eq!((selection.summary, selection.hidden), (Summary::Full, 0));
         assert!((parts.widths(&row).0.ceil() + 42. + 533. - 967.).abs() < 0.01);
+    }
+
+    /// #474: a split tab's last pane at about 1500 px, nothing selected, the path as logged on the
+    /// machine (532.6). Token widths: the view options button 42, Sort 42 and a gap, "⋯" 26 and
+    /// a gap, synchronized browsing and compare 28 each, 4 apart, and a gap; new folder 28. "2
+    /// items" taken as 46 px and its gap. Sort goes first, then the count, then the toggles,
+    /// and only then the path.
+    #[test]
+    fn a_split_pane_folds_its_count_and_toggles_before_the_path() {
+        let parts = RowParts {
+            switcher: 42.,
+            view: 42.,
+            sort: 46.,
+            toggles: 64.,
+            more: 30.,
+            info: Info::Folder {
+                count: 50.,
+                rest: 28.,
+            },
+        };
+        let at = |room: f32| row_layout(room, 532.6, &parts);
+        let row = |sort, count, toggles| RowLayout {
+            switcher: false,
+            sort_folded: sort,
+            count_hidden: count,
+            toggles_folded: toggles,
+            selection: None,
+            collapse: false,
+        };
+        // 78 + 42 + 46 + 64 + 533.
+        assert_eq!(at(763.), row(false, false, false));
+        // Sort into "⋯": 78 + 42 + 64 + 30 + 533.
+        assert_eq!(at(762.), row(true, false, false));
+        assert_eq!(at(747.), row(true, false, false));
+        // The count goes: 28 + 136 + 533.
+        assert_eq!(at(746.), row(true, true, false));
+        assert_eq!(at(697.), row(true, true, false));
+        // The toggles into "⋯": 28 + 42 + 30 + 533.
+        assert_eq!(at(696.), row(true, true, true));
+        assert_eq!(at(633.), row(true, true, true));
+        assert!(at(633.).tools_more());
+        // Only now the path.
+        let last = at(632.);
+        assert!(last.collapse && last.toggles_folded && last.count_hidden);
     }
 
     prop_compose! {
@@ -581,19 +678,22 @@ mod tests {
 
     prop_compose! {
         /// Widths like the pane row's: a view switcher or none (split view), Sort or none
-        /// (searching), and the folder's info or a selection. Folding Sort into "⋯" always
-        /// saves room, as on screen (Sort is 46 px with its gap, "⋯" 30).
+        /// (searching), the dual pane toggles or none, and the folder's info (an item count or
+        /// none) or a selection. Folding into "⋯" always saves room, as on screen (Sort is 46 px
+        /// with its gap, the toggles 64, "⋯" 30).
         fn row()(
             view in 30_f32..50.,
             switcher in prop_oneof![Just(0_f32), 40_f32..120.],
             sort in prop_oneof![Just(0_f32), 40_f32..60.],
+            toggles in prop_oneof![Just(0_f32), 40_f32..70.],
             more in 20_f32..34.,
             info in prop_oneof![
-                (20_f32..300.).prop_map(Info::Folder),
+                (prop_oneof![Just(0_f32), 10_f32..120.], 0_f32..200.)
+                    .prop_map(|(count, rest)| Info::Folder { count, rest }),
                 parts().prop_map(Info::Selection),
             ],
         ) -> RowParts {
-            RowParts { switcher: view + switcher, view, sort, more, info }
+            RowParts { switcher: view + switcher, view, sort, toggles, more, info }
         }
     }
 
@@ -636,12 +736,31 @@ mod tests {
                 ..base
             });
         }
-        if base.sort_folded {
+        // The view tools, the last folded first; the selection's "⋯" holds what is still in it.
+        let unfold = |row: RowLayout| RowLayout {
+            selection: row.selection.map(|s| SelectionLayout {
+                tools: row.tools_folded(),
+                ..s
+            }),
+            ..row
+        };
+        if base.toggles_folded {
+            return Some(unfold(RowLayout {
+                toggles_folded: false,
+                ..base
+            }));
+        }
+        if base.count_hidden {
             return Some(RowLayout {
-                sort_folded: false,
-                selection: base.selection.map(|s| SelectionLayout { sort: false, ..s }),
+                count_hidden: false,
                 ..base
             });
+        }
+        if base.sort_folded {
+            return Some(unfold(RowLayout {
+                sort_folded: false,
+                ..base
+            }));
         }
         (!base.switcher && parts.switcher > parts.view).then_some(RowLayout {
             switcher: true,
@@ -688,6 +807,13 @@ mod tests {
             let wide = row_layout(room + more_room, path, &parts);
             prop_assert!(wide.switcher >= narrow.switcher, "{:?} vs {:?}", wide, narrow);
             prop_assert!(wide.sort_folded <= narrow.sort_folded, "{:?} vs {:?}", wide, narrow);
+            prop_assert!(wide.count_hidden <= narrow.count_hidden, "{:?} vs {:?}", wide, narrow);
+            prop_assert!(
+                wide.toggles_folded <= narrow.toggles_folded,
+                "{:?} vs {:?}",
+                wide,
+                narrow
+            );
             prop_assert!(wide.collapse <= narrow.collapse, "{:?} vs {:?}", wide, narrow);
             if let (Some(w), Some(n)) = (wide.selection, narrow.selection) {
                 prop_assert!(w.hidden <= n.hidden, "{:?} vs {:?}", wide, narrow);
@@ -696,8 +822,9 @@ mod tests {
             }
         }
 
-        /// While any button that folds is still drawn, the path keeps every level: collapsed,
-        /// the switcher is gone, Sort is in "⋯", and the selection is "● 3 ⋯".
+        /// While anything that folds is still drawn, the path keeps every level: collapsed, the
+        /// switcher is gone, Sort and the toggles are in "⋯", the item count is left out, and
+        /// the selection is "● 3 ⋯".
         #[test]
         fn the_path_collapses_last(
             parts in row(),
@@ -708,6 +835,8 @@ mod tests {
             if layout.collapse {
                 prop_assert!(!layout.switcher, "{:?}", layout);
                 prop_assert_eq!(layout.sort_folded, parts.sort > 0.);
+                prop_assert_eq!(layout.toggles_folded, parts.toggles > 0.);
+                prop_assert_eq!(layout.count_hidden, parts.has_count());
                 if let Some(selection) = layout.selection {
                     prop_assert!(selection.folded(), "{:?}", layout);
                     prop_assert_eq!(selection.summary, Summary::Pill);
@@ -716,8 +845,8 @@ mod tests {
             }
         }
 
-        /// Folding follows the order strictly: the switcher, then Sort, then the selection's
-        /// summary, labels and buttons.
+        /// Folding follows the order strictly: the switcher, Sort, the item count, the toggles,
+        /// then the selection's summary, labels and buttons.
         #[test]
         fn folding_follows_the_order(
             parts in row(),
@@ -725,15 +854,26 @@ mod tests {
             room in 0_f32..1600.,
         ) {
             let layout = row_layout(room, path, &parts);
+            let sort = parts.sort > 0.;
             if layout.sort_folded {
                 prop_assert!(!layout.switcher, "{:?}", layout);
             }
+            if layout.count_hidden {
+                prop_assert!(!layout.switcher, "{:?}", layout);
+                prop_assert_eq!(layout.sort_folded, sort);
+            }
+            if layout.toggles_folded {
+                prop_assert!(!layout.switcher, "{:?}", layout);
+                prop_assert_eq!(layout.sort_folded, sort);
+                prop_assert_eq!(layout.count_hidden, parts.has_count());
+            }
             if selection_gave_way(&parts, &layout) {
                 prop_assert!(!layout.switcher, "{:?}", layout);
-                prop_assert_eq!(layout.sort_folded, parts.sort > 0.);
+                prop_assert_eq!(layout.sort_folded, sort);
+                prop_assert_eq!(layout.toggles_folded, parts.toggles > 0.);
             }
             if let Some(selection) = layout.selection {
-                prop_assert_eq!(selection.sort, layout.sort_folded);
+                prop_assert_eq!(selection.tools, layout.tools_folded());
                 let n = selection.buttons;
                 for hidden in (0..n).filter(|&ix| !selection.shows(ix)) {
                     prop_assert!((0..hidden).all(|less| !selection.shows(less)), "{:?}", layout);
@@ -741,9 +881,9 @@ mod tests {
             }
         }
 
-        /// "⋯" shows exactly when something is in it: Sort, or some of the selection's buttons;
-        /// once, with the selection's if there is one. × shows while any button is drawn, and
-        /// the summary is the pill before any button goes.
+        /// "⋯" shows exactly when something is in it: Sort, the toggles, or some of the
+        /// selection's buttons; once, with the selection's if there is one. × shows while any
+        /// button is drawn, and the summary is the pill before any button goes.
         #[test]
         fn more_shows_with_what_is_in_it(
             parts in row(),
@@ -753,7 +893,7 @@ mod tests {
             let layout = row_layout(room, path, &parts);
             if let Some(selection) = layout.selection {
                 let hidden = (0..selection.buttons).filter(|&ix| !selection.shows(ix)).count();
-                prop_assert_eq!(selection.more(), hidden > 0 || layout.sort_folded);
+                prop_assert_eq!(selection.more(), hidden > 0 || layout.tools_folded());
                 prop_assert!(!layout.tools_more());
                 prop_assert_eq!(!selection.folded(), hidden < selection.buttons);
                 if hidden > 0 {
@@ -761,7 +901,7 @@ mod tests {
                     prop_assert!(!selection.labels);
                 }
             } else {
-                prop_assert_eq!(layout.tools_more(), layout.sort_folded);
+                prop_assert_eq!(layout.tools_more(), layout.tools_folded());
             }
         }
 

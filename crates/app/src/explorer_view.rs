@@ -237,15 +237,14 @@ impl Explorer {
 
     /// With nothing selected, the pane row's end before the view buttons: the folder's item count
     /// (or the search's), then paste and new folder. It gives way to the path bar: the count is
-    /// cut off first.
+    /// left out (`count` false) when the row is short of room (#474); it only tells, so it goes
+    /// nowhere else.
     pub(super) fn render_folder_actions(
         &self,
         compact: bool,
+        count: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // A server's share list takes no new items.
-        let loaded = self.model.is_some() && !lists_shares(self.current_path());
-        let can_paste = loaded && !self.search_mode && self.services.shell.clipboard_has_files();
         div()
             .relative()
             .child(self.info_probe())
@@ -256,17 +255,35 @@ impl Explorer {
             .overflow_hidden()
             .items_center()
             .gap(theme::s_4())
-            .child(
-                div()
-                    .debug_selector(|| "pane-info".to_owned())
-                    .min_w_0()
-                    .truncate()
-                    .text_size(theme::fs_12())
-                    .text_color(theme::text_subtle())
-                    .child(self.info_parts(cx).join(" · ")),
-            )
-            .children(self.render_compare_chip(cx))
+            .when(count, |d| {
+                d.child(
+                    div()
+                        .debug_selector(|| "pane-info".to_owned())
+                        .min_w_0()
+                        .truncate()
+                        .text_size(theme::fs_12())
+                        .text_color(theme::text_subtle())
+                        .child(self.info_parts(cx).join(" · ")),
+                )
+            })
+            .child(self.render_folder_buttons(compact, cx))
+            .into_any_element()
+    }
 
+    /// The folder's info that never folds: the comparison's chip, paste and new folder, measured
+    /// for the row (#474).
+    fn render_folder_buttons(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        // A server's share list takes no new items.
+        let loaded = self.model.is_some() && !lists_shares(self.current_path());
+        let can_paste = loaded && !self.search_mode && self.services.shell.clipboard_has_files();
+        div()
+            .relative()
+            .child(slot_probe(&self.rest_slot))
+            .flex()
+            .min_w_0()
+            .items_center()
+            .gap(theme::s_4())
+            .children(self.render_compare_chip(cx))
             .when(can_paste, |d| {
                 d.child(action_button(
                     "paste",
@@ -289,7 +306,6 @@ impl Explorer {
                     cx.listener(|this, _: &ClickEvent, w, cx| this.new_folder(&NewFolder, w, cx)),
                 ))
             })
-            .into_any_element()
     }
 
     /// View tools: sort, details/icons/columns with the view options flyout, preview pane, split.
@@ -319,6 +335,9 @@ impl Explorer {
             .when(switcher, |d| d.child(self.render_view_switcher(window, cx)))
             .when(!switcher, |d| {
                 d.child(self.render_view_options(false, window, cx))
+            })
+            .when(self.pane.pair_toggles && !fold.toggles_folded, |d| {
+                d.child(self.render_dual_toggles(cx))
             });
         div()
             .flex()
@@ -326,9 +345,6 @@ impl Explorer {
             .items_center()
             .gap(theme::s_4())
             .child(tools)
-            .when(self.pane.pair_toggles, |d| {
-                d.child(self.render_dual_toggles(cx))
-            })
             .child(preview_button(self.preview_pane, cx))
             .child(split_button(
                 self.pane.split,
@@ -613,7 +629,7 @@ impl Explorer {
     /// choice settles at once. With nothing selected the info stays as wide as it was drawn.
     /// Before the row was laid out, the pane's width decides between everything and everything
     /// folded.
-    pub(super) fn row_layout(&self, selecting: bool, window: &Window) -> RowLayout {
+    pub(super) fn row_layout(&self, selecting: bool, window: &Window, cx: &App) -> RowLayout {
         let info = if selecting {
             let count = self.selection.len();
             let (full, short) = self.selection_summaries();
@@ -621,7 +637,26 @@ impl Explorer {
             let order = hide_order(peer.is_some(), count);
             Info::Selection(self.selection_parts(&full, &short, count, order, peer, window))
         } else {
-            Info::Folder(f32::from(self.info_slot.get()))
+            let text = self.info_parts(cx).join(" · ");
+            let text = super::top_bar::text_width(
+                &text,
+                theme::fs_12(),
+                gpui::FontWeight::NORMAL,
+                window,
+            );
+            Info::Folder {
+                // Laid out rounded up to whole pixels, and the gap after it.
+                count: f32::from(text.ceil() + theme::s_4()),
+                rest: f32::from(self.rest_slot.get()),
+            }
+        };
+        // Synchronized browsing and compare (the last pane of a split tab): 28 px each, 4 apart,
+        // and the gap before them. A pinned tab has no synchronized browsing.
+        let toggles = if self.pane.pair_toggles {
+            let n = if self.locked { 1. } else { 2. };
+            (theme::s_6() * 2. + theme::icon()) * n + theme::s_4() * n
+        } else {
+            px(0.)
         };
         // The view options button: padding, the view's icon, a gap and the chevron.
         let view = theme::s_6() * 2. + theme::icon() + theme::s_2() + theme::icon_sm();
@@ -639,6 +674,7 @@ impl Explorer {
             } else {
                 f32::from(view + theme::s_4())
             },
+            toggles: f32::from(toggles),
             more: f32::from(theme::h_ctl_sm() + theme::s_4()),
             info,
         };
@@ -672,6 +708,13 @@ impl Explorer {
             );
         }
         layout
+    }
+
+    /// Tests: "⋯" pressed, wherever it is.
+    #[cfg(test)]
+    pub(crate) fn open_more_menu_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let size = window.viewport_size();
+        self.open_more_menu(gpui::point(size.width / 2., size.height / 3.), window, cx);
     }
 
     /// Tests: the pane row's slots and what its layout was decided from, to say why a row came
@@ -711,8 +754,10 @@ impl Explorer {
     ) {
         self.cancel_early_menu();
         self.row_fold.menu_adds_sort = self.row_fold.sort_in_more;
+        self.row_fold.menu_adds_toggles = self.row_fold.toggles_in_more;
         self.open_context_menu(position, window, cx);
         self.row_fold.menu_adds_sort = false;
+        self.row_fold.menu_adds_toggles = false;
     }
 
     /// The selection in a narrow pane: "● 3" (the tooltip has the whole summary) and "⋯", which

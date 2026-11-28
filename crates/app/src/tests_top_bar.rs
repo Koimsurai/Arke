@@ -346,11 +346,14 @@ fn a_narrow_window_keeps_everything_in_reach(cx: &mut TestAppContext) {
 /// With items selected the pane row shows their actions; the path bar keeps its room.
 #[gpui::test]
 fn the_selection_actions_share_the_pane_row(cx: &mut TestAppContext) {
-    let (_ws, view, cx) = open_deep(cx, 1000.);
+    let (_ws, view, cx) = open_deep(cx, 1600.);
     assert!(
         cx.debug_bounds("pane-info").is_some(),
         "the item count shows"
     );
+    // Narrow enough for the item count to go (#474), and the selection to give way.
+    cx.simulate_resize(size(px(1000.), px(650.)));
+    settle(cx);
     cx.simulate_keystrokes("ctrl-a");
     settle(cx);
     assert_eq!(view.update(cx, |v, _| v.selection.len()), 3);
@@ -734,6 +737,82 @@ fn each_pane_folds_its_own_row(cx: &mut TestAppContext) {
         sort.left() > px(f32::from(width) / 2.),
         "{width} px: {sort:?}"
     );
+}
+
+/// #474: in a split tab, the right pane (on a short path) folds Sort, then its item count, then
+/// synchronized browsing and compare into "⋯", before its path loses a level. The menu shows
+/// them checked while on, and they toggle as the buttons do.
+#[gpui::test]
+fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1800.);
+    let right = split(&ws, &left, cx);
+    let levels = arke_core::path::breadcrumbs(std::path::Path::new(OTHER)).len();
+    let state = |cx: &mut VisualTestContext| {
+        right.update(cx, |v, _| (v.row_fold, v.row_debug_for_test()))
+    };
+    let mut found = None;
+    for width in (600..=1800_u16).rev().step_by(10) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        settle(cx);
+        let (fold, row) = state(cx);
+        let shown = right.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+        let at = format!("{width} px: {fold:?}, {shown} of {levels}; {row}");
+        // While the toggles are drawn, the path keeps its levels; they go after Sort.
+        assert!(
+            fold.toggles_in_more || shown == levels,
+            "the path bar gives way last: {at}"
+        );
+        assert!(
+            !fold.toggles_in_more || fold.sort_in_more,
+            "Sort goes first: {at}"
+        );
+        if fold.toggles_in_more && shown == levels {
+            found = Some(width);
+            break;
+        }
+    }
+    let width = found.expect("a width where the right pane folds its toggles, path whole");
+    assert!(
+        cx.debug_bounds("row-more").is_some(),
+        "{width} px: ⋯ holds them"
+    );
+    let sync = t!("compare.sync_tip").into_owned();
+    let compare = t!("compare.compare_tip").into_owned();
+    let menu = |cx: &mut VisualTestContext| {
+        right.update_in(cx, Explorer::open_more_menu_for_test);
+        settle(cx);
+        right
+            .update(cx, |v, _| {
+                v.context_menu
+                    .as_ref()
+                    .map(|m| (m.labels(), m.checked_labels()))
+            })
+            .expect("⋯ opens the folder's menu")
+    };
+    let (labels, checked) = menu(cx);
+    assert!(
+        labels.contains(&sync) && labels.contains(&compare),
+        "{labels:?}"
+    );
+    assert!(!checked.contains(&sync), "off: {checked:?}");
+    // Enter on synchronized browsing turns it on, as its button does, and closes the menu.
+    let slot = labels.iter().position(|l| *l == sync).expect("sync row");
+    right.update(cx, |v, cx| {
+        v.context_menu
+            .as_mut()
+            .expect("menu")
+            .highlight_for_test(slot);
+        cx.notify();
+    });
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert!(
+        right.update(cx, |v, _| v.context_menu.is_none()),
+        "the menu closes"
+    );
+    assert!(right.update(cx, |v, _| v.pane.synced), "synchronized");
+    let (_, checked) = menu(cx);
+    assert!(checked.contains(&sync), "on: {checked:?}");
 }
 
 /// Resizes the window and draws the way the platform does: a frame at the new size, then one

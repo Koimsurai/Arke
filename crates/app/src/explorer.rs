@@ -737,6 +737,11 @@ pub(crate) struct RowFold {
     pub(crate) sort_in_more: bool,
     /// The context menu being made was opened from "⋯" with Sort in it: it gets "Sort by".
     pub(crate) menu_adds_sort: bool,
+    /// The pane row folded synchronized browsing and compare into "⋯".
+    pub(crate) toggles_in_more: bool,
+    /// The context menu being made was opened from "⋯" with the dual pane toggles in it: it gets
+    /// them, checked while on.
+    pub(crate) menu_adds_toggles: bool,
     /// The path bar collapses levels: even with everything else folded it is short of its whole
     /// width. The path bar takes this from the row's layout rather than deciding from its slot
     /// on its own, so the two never disagree (#474).
@@ -855,6 +860,9 @@ pub(crate) struct Explorer {
     /// Width of the pane row's view tools that fold ("⋯", Sort, the view switcher or button) on
     /// the last frame: part of the room the row shares out (#474).
     tools_slot: path_bar::SlotWidth,
+    /// Width of what of the folder's info never folds (paste, new folder, the comparison's chip)
+    /// on the last frame: the item count beside it hides when the row is short (#474).
+    rest_slot: path_bar::SlotWidth,
     /// What the pane row's layout was last logged with (`arke::fold` at debug level, #528).
     fold_logged: std::cell::Cell<Option<FoldLogged>>,
     /// Where the pane row's folded Sort went (#474).
@@ -1282,6 +1290,7 @@ impl Explorer {
             path_slot: path_bar::SlotWidth::default(),
             info_slot: path_bar::SlotWidth::default(),
             tools_slot: path_bar::SlotWidth::default(),
+            rest_slot: path_bar::SlotWidth::default(),
             fold_logged: std::cell::Cell::new(None),
             row_fold: RowFold::default(),
             top_row: top_bar::TopRow::default(),

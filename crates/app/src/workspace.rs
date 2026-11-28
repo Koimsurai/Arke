@@ -421,7 +421,7 @@ pub(crate) struct Workspace {
     settings_panel: Option<settings_panel::SettingsPage>,
     /// Open Recycle Bin page.
     recycle_page: Option<recycle_page::RecyclePage>,
-    home_page: Option<home_page::HomeView>,
+    home_pages: Vec<home_page::HomeView>,
     whats_new: Option<whats_new_page::WhatsNewView>,
     /// The tab a page tab is being opened from, until the page takes it as its opener.
     page_opener: Option<gpui::EntityId>,
@@ -861,7 +861,7 @@ impl Workspace {
             _saved_workspaces: saved_workspaces,
             settings_panel: None,
             recycle_page: None,
-            home_page: None,
+            home_pages: Vec::new(),
             whats_new: None,
             page_opener: None,
             startup: if start_default {
@@ -1061,7 +1061,7 @@ impl Workspace {
             if saved.home {
                 // Home over its folder, as it was left; back shows the folder.
                 self.active = tab_ix;
-                self.open_home_as(false, false, window, cx);
+                self.open_home_fresh(false, false, window, cx);
             }
         }
         ids
@@ -1069,7 +1069,6 @@ impl Workspace {
 
     /// Snapshot of this window's tabs for the last session. Panes without a path are skipped.
     pub(crate) fn session_snapshot(&self, cx: &App) -> crate::settings::Session {
-        let home_tab = self.home_page.as_ref().and_then(|p| self.tab_of(&p.owner));
         let shown = self.saved_shown.as_ref();
         let mut tabs: Vec<crate::settings::SessionTab> = Vec::with_capacity(self.tabs.len());
         let mut shown_tabs = Vec::new();
@@ -1090,7 +1089,7 @@ impl Workspace {
                 ratio: tab.ratio,
                 pinned: tab.pinned,
                 synced: tab.synced && panes.len() > 1,
-                home: home_tab == Some(ix),
+                home: self.tab_has_home(ix),
                 panes,
             });
         }
@@ -1892,8 +1891,7 @@ impl Workspace {
                 // Already on Home: there is nothing left to close.
                 if !self.home_open() {
                     self.remember_closed(ix, cx);
-                    self.home_page = None;
-                    self.open_home_as(false, true, window, cx);
+                    self.open_home_fresh(false, true, window, cx);
                 }
                 return;
             }

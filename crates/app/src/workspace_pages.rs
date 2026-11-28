@@ -12,7 +12,7 @@ use crate::explorer::PageClosed;
 /// The owning tab: its list view (which side in dual pane) and the folder it was on when the page opened.
 #[derive(Clone, Debug)]
 pub(super) struct Owner {
-    view: EntityId,
+    pub(super) view: EntityId,
     path: Option<PathBuf>,
     /// The tab was opened just for this page, so closing the page closes the tab too.
     own_tab: bool,
@@ -70,8 +70,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// History stepped to `page` in `view`: shows it over the tab. Only one Home page (and one
-    /// Recycle Bin page) exists, so one open in another tab moves here.
+    /// History stepped to `page` in `view`: shows it over the tab. Every tab has its own Home
+    /// page; only one Recycle Bin page exists, so one open in another tab moves here.
     pub(super) fn show_history_page(
         &mut self,
         view: &gpui::Entity<crate::explorer::Explorer>,
@@ -88,7 +88,6 @@ impl Workspace {
         self.clear_pages_here();
         match page {
             arke_core::NavPage::Home => {
-                self.home_page = None;
                 self.show_home(false, window, cx);
                 self.focus_active(window, cx);
             }
@@ -109,9 +108,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let id = view.entity_id();
-        if self.home_page.as_ref().is_some_and(|p| p.owner.view == id) {
-            self.home_page = None;
-        }
+        self.home_pages.retain(|p| p.owner.view != id);
         if self
             .recycle_page
             .as_ref()
@@ -127,7 +124,6 @@ impl Workspace {
     /// without going anywhere) is on the folder under it, as a folder opened from the page.
     pub(super) fn sync_history_pages(&mut self, cx: &mut Context<Self>) {
         let shown = |owner: Option<&Owner>| owner.map(|o| o.view);
-        let home = shown(self.home_page.as_ref().map(|p| &p.owner));
         let recycle = shown(self.recycle_page.as_ref().map(|p| &p.owner));
         let views: Vec<_> = self
             .tabs
@@ -138,7 +134,9 @@ impl Workspace {
             let id = view.entity_id();
             let covered = match view.read(cx).page() {
                 None => continue,
-                Some(arke_core::NavPage::Home) => home == Some(id),
+                Some(arke_core::NavPage::Home) => {
+                    self.home_pages.iter().any(|p| p.owner.view == id)
+                }
                 Some(arke_core::NavPage::RecycleBin) => recycle == Some(id),
             };
             if covered {
@@ -160,7 +158,7 @@ impl Workspace {
     /// Removes the page the active tab shows and returns its owner (`None` when a folder shows).
     fn take_shown_page(&mut self) -> Option<Owner> {
         if self.home_open() {
-            self.home_page.take().map(|p| p.owner)
+            self.take_home_here().map(|p| p.owner)
         } else if self.settings_open() {
             self.settings_panel.take().map(|p| p.owner)
         } else if self.recycle_open() {
@@ -193,14 +191,14 @@ impl Workspace {
     /// the pages it shows stay open over the new folder instead of closing as on a navigation.
     /// Returns whether a page covers the tab.
     pub(super) fn keep_pages_over(&mut self, view: EntityId, path: &std::path::Path) -> bool {
+        let homes = self.home_pages.iter_mut().map(|p| &mut p.owner);
         let owners = [
-            self.home_page.as_mut().map(|p| &mut p.owner),
             self.settings_panel.as_mut().map(|p| &mut p.owner),
             self.recycle_page.as_mut().map(|p| &mut p.owner),
             self.whats_new.as_mut().map(|p| &mut p.owner),
         ];
         let mut covered = false;
-        for owner in owners.into_iter().flatten() {
+        for owner in homes.chain(owners.into_iter().flatten()) {
             if owner.view == view {
                 owner.path = Some(path.to_path_buf());
                 covered = true;
@@ -244,7 +242,7 @@ impl Workspace {
         if self.recycle_page.as_ref().is_some_and(|p| owns(&p.owner)) {
             return Some((rust_i18n::t!("recycle.title").into_owned(), Icon::Trash));
         }
-        if self.home_page.as_ref().is_some_and(|p| owns(&p.owner)) {
+        if self.home_pages.iter().any(|p| owns(&p.owner)) {
             return Some((rust_i18n::t!("home.title").into_owned(), Icon::KfHome));
         }
         if self.whats_new.as_ref().is_some_and(|p| owns(&p.owner)) {
@@ -270,13 +268,7 @@ impl Workspace {
         {
             self.recycle_page = None;
         }
-        if self
-            .home_page
-            .as_ref()
-            .is_some_and(|p| p.owner.view == here)
-        {
-            self.home_page = None;
-        }
+        self.home_pages.retain(|p| p.owner.view != here);
         if self
             .whats_new
             .as_ref()

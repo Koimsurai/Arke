@@ -192,10 +192,6 @@ pub(super) struct RowLayout {
     pub(super) selection: Option<SelectionLayout>,
     /// Even everything folded leaves the path bar short of its whole width: it collapses levels
     /// (from its own slot's width, as it would anyway).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the path bar collapses from its own width")
-    )]
     pub(super) collapse: bool,
 }
 

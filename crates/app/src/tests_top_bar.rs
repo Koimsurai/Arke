@@ -488,9 +488,10 @@ fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
         let sort = cx.debug_bounds("sort-options").is_some();
         let switcher = cx.debug_bounds("view-switcher").is_some();
         let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+        let row = view.update(cx, |v, _| v.row_debug_for_test());
         let at = format!(
             "{width} px: {drawn:?}, ⋯ {more}, pill {pill}, sort {sort}, switcher {switcher}, \
-             {shown} of {levels}"
+             {shown} of {levels}; {row}"
         );
         // The least used go first: a button in "⋯" never has a less used one still drawn.
         assert!(drawn.windows(2).all(|w| !w[0] || w[1]), "{at}");
@@ -597,34 +598,60 @@ fn the_view_tools_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
     // With the whole path: the switcher and Sort; the view button and Sort; the view button
     // and "⋯".
     let mut seen = [false; 3];
+    let mut before: Option<(u16, (bool, bool))> = None;
     for width in (400..=2000_u16).rev().step_by(20) {
-        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
-        settle(cx);
-        let switcher = cx.debug_bounds("view-switcher").is_some();
-        let sort = cx.debug_bounds("sort-options").is_some();
-        let options = cx.debug_bounds("view-options").is_some();
-        let more = cx.debug_bounds("row-more").is_some();
-        let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
-        let at = format!(
-            "{width} px: switcher {switcher}, sort {sort}, more {more}, {shown} of {levels}"
-        );
-        assert!(options, "the view options button never folds: {at}");
-        assert!(!switcher || sort, "the switcher goes before Sort: {at}");
-        assert_eq!(more, !sort, "⋯ holds Sort: {at}");
-        assert!(
-            shown == levels || (!switcher && !sort),
-            "the path bar gives way last: {at}"
-        );
-        if shown == levels {
-            seen[0] |= switcher && sort;
-            seen[1] |= !switcher && sort;
-            seen[2] |= more;
+        let stage = view_tools_at(cx, &view, width, levels, &mut seen);
+        // "⋯" for Sort saves only 16 px: walk back over a step that changed 2 px at a time, so
+        // a stage narrower than a step is seen too.
+        if let Some((wider, was)) = before
+            && was != stage
+        {
+            for between in (width + 2..wider).rev().step_by(2) {
+                view_tools_at(cx, &view, between, levels, &mut seen);
+            }
         }
+        before = Some((width, stage));
     }
     assert_eq!(
         seen, [true; 3],
         "every stage keeps the whole path at some width"
     );
+}
+
+/// The window `width` wide with nothing selected: checks the pane row's view tools against the
+/// path bar, notes in `seen` which stage kept the whole path, and returns the switcher's and
+/// Sort's.
+fn view_tools_at(
+    cx: &mut VisualTestContext,
+    view: &Entity<Explorer>,
+    width: u16,
+    levels: usize,
+    seen: &mut [bool; 3],
+) -> (bool, bool) {
+    cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+    settle(cx);
+    let switcher = cx.debug_bounds("view-switcher").is_some();
+    let sort = cx.debug_bounds("sort-options").is_some();
+    let options = cx.debug_bounds("view-options").is_some();
+    let more = cx.debug_bounds("row-more").is_some();
+    let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+    let row = view.update(cx, |v, _| v.row_debug_for_test());
+    let at = format!(
+        "{width} px: switcher {switcher}, sort {sort}, more {more}, {shown} of {levels}; {row}"
+    );
+    assert!(options, "the view options button never folds: {at}");
+    assert!(!switcher || sort, "the switcher goes before Sort: {at}");
+    assert_eq!(more, !sort, "⋯ holds Sort: {at}");
+    assert!(
+        shown == levels || (!switcher && !sort),
+        "the path bar gives way last: {at}"
+    );
+    if shown == levels {
+        seen[0] |= switcher && sort;
+        seen[1] |= !switcher && sort;
+        seen[2] |= more;
+    }
+    (switcher, sort)
 }
 
 /// #474: Sort folded into "⋯" is in its menu, with the current column and direction checked,

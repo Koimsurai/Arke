@@ -730,17 +730,33 @@ struct Filtered {
     entries: Arc<Vec<Entry>>,
 }
 
-/// The pane row's Sort once it folded into "⋯" (#474).
+/// The pane row's Sort once it folded into "⋯", and how its layout turned out (#474).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RowFold {
     /// The pane row folded Sort into "⋯" on the last frame.
     pub(crate) sort_in_more: bool,
     /// The context menu being made was opened from "⋯" with Sort in it: it gets "Sort by".
     pub(crate) menu_adds_sort: bool,
+    /// The layout last drawn, and what it was decided from.
+    drawn: Option<RowDrawn>,
+    /// How far the widths the layout is decided from fell short of what was drawn, once seen:
+    /// that much of the room is kept back from then on (see `Explorer::row_layout`).
+    slack: f32,
 }
 
-/// Room, path slot, info and tools widths, and the layout last logged for the pane row.
-type FoldLogged = (f32, f32, f32, f32, fold::RowLayout);
+/// A pane row layout as it was decided: the room and the path bar's whole width it was decided
+/// for, and the info's and the view tools' widths it counted on.
+#[derive(Clone, Copy, Debug)]
+struct RowDrawn {
+    room: f32,
+    need: f32,
+    layout: fold::RowLayout,
+    widths: (f32, f32),
+}
+
+/// Path slot, info and tools widths, the path's whole width, the room kept back, and the layout
+/// last logged for the pane row.
+type FoldLogged = (f32, f32, f32, f32, f32, fold::RowLayout);
 
 #[allow(
     clippy::struct_excessive_bools,

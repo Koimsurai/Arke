@@ -35,7 +35,7 @@ use super::ops::DeletePermanently;
 use super::toolbar::ToolbarStop as _;
 use super::{
     CopyFiles, CutFiles, DeleteFiles, ErrorAction, Escape, Explorer, ExplorerEvent, FocusOtherPane,
-    GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, RenameFile, ViewColumns,
+    GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, RenameFile, RowDrawn, ViewColumns,
     ViewDetails, ViewMode,
 };
 use super::{DragPreview, DraggedFiles, drop_external_into, drop_into};
@@ -87,6 +87,9 @@ pub(super) const SIZE_SUM_MAX: usize = 5_000;
 fn compact_bar() -> gpui::Pixels {
     crate::theme::scaled_px(860.)
 }
+/// The most room the pane row keeps back for widths that came out wider than counted (see
+/// [`Explorer::row_layout`]): a button or two.
+const MAX_SLACK: f32 = 48.;
 /// Below this pane width "Copy to/Move to the other side" show icons only (split view)
 fn peer_labels_min() -> gpui::Pixels {
     crate::theme::scaled_px(600.)
@@ -610,7 +613,7 @@ impl Explorer {
     /// choice settles at once. With nothing selected the info stays as wide as it was drawn.
     /// Before the row was laid out, the pane's width decides between everything and everything
     /// folded.
-    pub(super) fn row_layout(&self, selecting: bool, window: &Window) -> RowLayout {
+    pub(super) fn row_layout(&mut self, selecting: bool, window: &Window) -> RowLayout {
         let info = if selecting {
             let count = self.selection.len();
             let (full, short) = self.selection_summaries();
@@ -654,21 +657,63 @@ impl Explorer {
             .path_full_width(window)
             .max(super::top_bar::path_compact_below());
         let [path, info, tools, need] = [path, info, tools, need].map(f32::from);
-        let layout = fold::row_layout(path + info + tools, need, &parts);
+        let room = path + info + tools;
+        // The row last drawn was decided for this same room and path, and still left the path
+        // bar short of its whole width: what was drawn came out wider than counted, by at least
+        // what was kept back already and the shortfall. Keep that much back from now on, so a
+        // button never stands beside a collapsed path. Only when the room held: a room that
+        // changed since (a resize) says nothing.
+        if let Some(drawn) = self.row_fold.drawn
+            && !drawn.layout.collapse
+            && (drawn.room - room).abs() < 0.5
+            && (drawn.need - need).abs() < 0.5
+            && path < need
+        {
+            let slack = self.row_fold.slack + (need - path).ceil();
+            self.row_fold.slack = slack.min(f32::from(theme::scaled_px(MAX_SLACK)));
+            log::debug!(
+                target: "arke::fold",
+                "path slot {path} short of {need} with info and tools counted {:?} wide for room \
+                 {room}: {} kept back from now on",
+                drawn.widths,
+                self.row_fold.slack,
+            );
+        }
+        let slack = self.row_fold.slack;
+        let layout = fold::row_layout(room - slack, need, &parts);
+        let widths = parts.widths(&layout);
+        self.row_fold.drawn = Some(RowDrawn {
+            room,
+            need,
+            layout,
+            widths,
+        });
         // Once per change: the row draws on every hover.
-        let seen = (path, info, tools, need, layout);
+        let seen = (path, info, tools, need, slack, layout);
         if log::log_enabled!(target: "arke::fold", log::Level::Debug)
             && self.fold_logged.replace(Some(seen)) != Some(seen)
         {
-            let (info_width, tools_width) = parts.widths(&layout);
+            let (info_width, tools_width) = widths;
             log::debug!(
                 target: "arke::fold",
-                "room {} = path slot {path} + info {info} + tools {tools}; path needs {need}, \
-                 info {info_width} and tools {tools_width} wide: {layout:?}",
-                path + info + tools,
+                "room {room} = path slot {path} + info {info} + tools {tools}, {slack} kept back; \
+                 path needs {need}, info {info_width} and tools {tools_width} wide: {layout:?}",
             );
         }
         layout
+    }
+
+    /// Tests: the pane row's slots and what its layout was decided from, to say why a row came
+    /// out as it did.
+    #[cfg(test)]
+    pub(crate) fn row_debug_for_test(&self) -> String {
+        format!(
+            "path slot {:?}, info {:?}, tools {:?}; {:?}",
+            self.path_slot.get(),
+            self.info_slot.get(),
+            self.tools_slot.get(),
+            self.row_fold,
+        )
     }
 
     /// Records the width of the pane row's info (the item count or the selection's actions) for

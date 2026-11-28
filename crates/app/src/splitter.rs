@@ -6,8 +6,9 @@
 //! a double-click resets and what is saved when it ends. [`Splitter`] does what they share, the
 //! same way for all of them:
 //! - the whole hit area lights the line up under the pointer, not only the thin line itself. The
-//!   handle watches its hit area itself and paints the line's color: no group hover styles, whose
-//!   redraws depend on which element happens to notify;
+//!   hover is the hit area's own (the same element and hitbox that take the press): it sets a
+//!   text color under the pointer, which the line reads while it is painted, and GPUI draws the
+//!   hit area again when the pointer enters or leaves it;
 //! - a press starts the drag (a double-click resets instead) and goes no further;
 //! - moves report the pointer, and the cursor stays the resize cursor all over the window;
 //! - the release ends it wherever the pointer is. The handle being dragged listens for it in the
@@ -16,19 +17,17 @@
 //!   (released outside the window) ends it too. Each end redraws the window.
 //!
 //! The window-wide drag listeners exist only while a drag is under way, painted by the dragged
-//! handle. At rest a divider has its mouse listeners and one hitbox watching the pointer, which
-//! asks for a frame only when the pointer enters or leaves it.
+//! handle. At rest a divider has its own mouse and hover listeners and nothing else.
 //!
 //! `RUST_LOG=arke::splitter=debug` logs each press, each end (and which path ended it) and each
 //! frame drawn while a drag is under way.
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, CursorStyle, DispatchPhase, Div, ElementId, HitboxBehavior, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Rgba,
-    Stateful, Styled, Window, canvas, prelude::FluentBuilder, px,
+    App, CursorStyle, DispatchPhase, Div, ElementId, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Rgba, Stateful, Styled, Window,
+    canvas, prelude::FluentBuilder, px,
 };
 
 use crate::theme;
@@ -172,10 +171,7 @@ impl Splitter {
         if dragging {
             log::debug!(target: LOG, "{id}: drawn with a drag under way");
         }
-        // Whether the pointer is over the hit area, found while painting it, before the line.
-        let hovered = Rc::new(Cell::new(false));
         let line = line.child(line_color(LineColor {
-            hovered: Rc::clone(&hovered),
             dragging,
             hover,
             active,
@@ -188,6 +184,9 @@ impl Splitter {
         hit.debug_selector(|| id.to_string())
             .id(id.clone())
             .cursor(cursor)
+            // The hover signal the line reads (see `line_color`): no text is drawn in here.
+            .text_color(gpui::transparent_black())
+            .when(!dragging, |d| d.hover(|s| s.text_color(HOVERED)))
             .on_mouse_down(MouseButton::Left, move |e, window, cx| {
                 cx.stop_propagation();
                 let double = crate::press_guard::is_double_click(e.click_count);
@@ -212,7 +211,6 @@ impl Splitter {
                     window.refresh();
                 }
             })
-            .child(hover_watch(hovered))
             .child(line)
             .when(dragging, |d| {
                 d.child(drag_listeners(id, cursor, on_drag, on_end))
@@ -220,34 +218,17 @@ impl Splitter {
     }
 }
 
-/// Watches whether the pointer is over the hit area it fills: its own hitbox (so whatever covers
-/// the divider also covers this), read while painting into `hovered` for the line painted after
-/// it, and a frame asked for when the pointer enters or leaves it.
-fn hover_watch(hovered: Rc<Cell<bool>>) -> impl IntoElement {
-    canvas(
-        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-        move |_, hitbox, window, cx| {
-            let now = hitbox.is_hovered(window) && !cx.has_active_drag();
-            hovered.set(now);
-            let id = hitbox.id;
-            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture
-                    && (id.is_hovered(window) && !cx.has_active_drag()) != now
-                {
-                    window.refresh();
-                }
-            });
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
-}
+/// The text color the hit area takes under the pointer, as the line's hover signal. Any color
+/// with some alpha would do: only whether it is transparent is read.
+const HOVERED: gpui::Hsla = gpui::Hsla {
+    h: 0.,
+    s: 0.,
+    l: 0.,
+    a: 1.,
+};
 
 /// What the line shows over its color at rest.
 struct LineColor {
-    hovered: Rc<Cell<bool>>,
     dragging: bool,
     hover: Rgba,
     active: Option<Rgba>,
@@ -257,14 +238,17 @@ struct LineColor {
     name: String,
 }
 
-/// Paints the line's hover or drag color over the whole line (none at rest).
+/// Paints the line's hover or drag color over the whole line (none at rest). Under the pointer
+/// the hit area's text color is [`HOVERED`] instead of transparent; GPUI works that out from the
+/// hit area's own hitbox, the one its press listener checks too.
 fn line_color(look: LineColor) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, (), window, _| {
+            let hovered = window.text_style().color.a > 0.;
             let color = if look.dragging {
                 look.active
-            } else if look.hovered.get() {
+            } else if hovered {
                 Some(look.hover)
             } else {
                 None

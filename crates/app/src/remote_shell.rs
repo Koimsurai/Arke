@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use arke_core::remote::RemoteUrl;
 use arke_core::{Entry, EntryKind};
@@ -184,8 +184,31 @@ fn stage_dir(remotes: &Remotes) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// A staging folder that is deleted when this is dropped, unless [`Self::keep`] is called: a
+/// staging that fails partway leaves nothing behind (#529).
+struct StageGuard(Option<PathBuf>);
+
+impl StageGuard {
+    /// The folder stays (its copies are in use).
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take()
+            && let Err(err) = std::fs::remove_dir_all(&dir)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            log::info!("staging folder {} not removed: {err}", dir.display());
+        }
+    }
+}
+
 /// Downloads remote items into a new staging folder and returns their local copies, in order
-/// (local paths pass through). Refuses past `max` bytes in total. Background thread.
+/// (local paths pass through). Refuses past `max` bytes in total. If anything fails, the
+/// staging folder is deleted again. Background thread.
 pub(crate) fn stage_local_copies(
     remotes: &Remotes,
     paths: &[PathBuf],
@@ -193,7 +216,7 @@ pub(crate) fn stage_local_copies(
 ) -> Result<Vec<PathBuf>, RemoteError> {
     let progress = OpProgress::default();
     let sink = Sink(&progress);
-    let mut dir: Option<PathBuf> = None;
+    let mut staged = StageGuard(None);
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
         let Some(url) = remote(path) else {
@@ -204,11 +227,11 @@ pub(crate) fn stage_local_copies(
         if progress.bytes.load(Ordering::Relaxed) + entry.size > max {
             return Err(RemoteError::TooLarge);
         }
-        let dir = if let Some(d) = &dir {
+        let dir = if let Some(d) = &staged.0 {
             d.clone()
         } else {
             let d = stage_dir(remotes)?;
-            dir = Some(d.clone());
+            staged.0 = Some(d.clone());
             d
         };
         let local = dir.join(arke_remote::hub::local_name(&entry.name));
@@ -218,7 +241,112 @@ pub(crate) fn stage_local_copies(
         }
         out.push(local);
     }
+    staged.keep();
     Ok(out)
+}
+
+/// How long copies in the download cache are kept: older ones go at the next start (#529).
+const CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Deletes what earlier runs left in the download cache `dir` (#529): staging folders older
+/// than [`CACHE_MAX_AGE`] (copies made for the clipboard or a drag out), and downloaded copies
+/// (opened files, previews) not used for as long and not open in a program now. Only touches
+/// the folders Arke makes there. Background thread.
+pub(crate) fn prune_cache(dir: &Path, now: SystemTime) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "staged" {
+            prune_staged(&entry.path(), now);
+        } else if is_fetch_folder(&name) {
+            prune_fetched(&entry.path(), now);
+        }
+    }
+}
+
+/// Whether `time` is longer ago than [`CACHE_MAX_AGE`]; unknown times are not.
+fn is_stale(time: Option<SystemTime>, now: SystemTime) -> bool {
+    time.is_some_and(|t| now.duration_since(t).is_ok_and(|age| age > CACHE_MAX_AGE))
+}
+
+/// The download cache's folders are named by 16 hex digits of a hash (`Remotes::fetch`).
+fn is_fetch_folder(name: &str) -> bool {
+    name.len() == 16 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// When a staging folder was made, from its name (`<milliseconds since 1970>-<n>`, see
+/// [`stage_dir`]).
+fn staged_time(name: &str) -> Option<SystemTime> {
+    let millis: u64 = name.split_once('-')?.0.parse().ok()?;
+    Some(SystemTime::UNIX_EPOCH + Duration::from_millis(millis))
+}
+
+fn prune_staged(staged: &Path, now: SystemTime) {
+    let Ok(read) = std::fs::read_dir(staged) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let time = staged_time(&entry.file_name().to_string_lossy())
+            .or_else(|| entry.metadata().ok().and_then(|m| m.created().ok()));
+        if !is_stale(time, now) {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(err) = removed {
+            log::info!("old staging {} not removed: {err}", path.display());
+        }
+    }
+}
+
+fn prune_fetched(folder: &Path, now: SystemTime) {
+    let Ok(read) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        // Last used: downloaded (created), or found in the cache again (`Remotes::fetch` sets
+        // the access time then, as Windows may not keep it).
+        let used = [meta.created().ok(), meta.accessed().ok()]
+            .into_iter()
+            .flatten()
+            .max();
+        let path = entry.path();
+        if meta.is_file()
+            && is_stale(used, now)
+            && !in_use(&path)
+            && let Err(err) = std::fs::remove_file(&path)
+        {
+            log::debug!("old download {} not removed: {err}", path.display());
+        }
+    }
+    // An old folder left empty goes too (a new one may be about to get a download).
+    let made = std::fs::metadata(folder).and_then(|m| m.created()).ok();
+    if is_stale(made, now) {
+        let _ = std::fs::remove_dir(folder);
+    }
+}
+
+/// Whether a program has the file open: opening it without sharing then fails.
+fn in_use(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .is_err()
 }
 
 /// HTTP that always fails (WinHTTP unavailable, tests).
@@ -270,6 +398,10 @@ pub(crate) fn start(
             remotes.set_insecure_allowed(&url, true);
         }
     }
+    let cache = remotes.cache_dir().to_path_buf();
+    crate::explorer::spawn_thread("remote-cache-prune", move || {
+        prune_cache(&cache, SystemTime::now());
+    });
     remotes
 }
 
@@ -301,6 +433,21 @@ pub(crate) fn test_remotes() -> Arc<Remotes> {
         secrets: Arc::new(arke_remote::creds::NoSecrets),
         transport: Arc::new(NoHttp),
         portable: Arc::new(arke_remote::mtp::NoDevices),
+    })
+}
+
+/// A hub for tests with these phones, its download cache in `cache_dir`.
+#[cfg(test)]
+pub(crate) fn test_remotes_with(
+    portable: Arc<dyn arke_remote::mtp::Portable>,
+    cache_dir: PathBuf,
+) -> Arc<Remotes> {
+    Remotes::new(arke_remote::RemotesConfig {
+        known_hosts: None,
+        cache_dir,
+        secrets: Arc::new(arke_remote::creds::NoSecrets),
+        transport: Arc::new(NoHttp),
+        portable,
     })
 }
 
@@ -438,10 +585,11 @@ impl RemoteShell {
                     // Between servers (or a copy on one server: SFTP has no server-side copy):
                     // through a local staging folder.
                     let stage = stage_dir(remotes)?;
+                    let cleanup = StageGuard(Some(stage.clone()));
                     let local = stage.join(arke_remote::hub::local_name(&entry.name));
                     let result = download_tree(remotes, &from, &entry, &local, sink)
                         .and_then(|()| upload_tree(remotes, &local, &target, sink));
-                    let _ = std::fs::remove_dir_all(&stage);
+                    drop(cleanup);
                     result?;
                     if is_move {
                         remotes.delete(&from, sink)?;
@@ -1025,6 +1173,137 @@ pub(crate) fn refresh_phones(remotes: Arc<Remotes>, cx: &mut gpui::App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arke_remote::testing_mtp::{FakeDevices, Node};
+
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    /// A phone with two photos in `DCIM`, and the guard of the hub's download cache.
+    fn phone() -> (Arc<FakeDevices>, Arc<Remotes>, tempfile::TempDir) {
+        let devices = Arc::new(FakeDevices::default());
+        devices.plug(
+            "phone",
+            "Phone",
+            Node::folder([(
+                "Internal",
+                Node::folder([(
+                    "DCIM",
+                    Node::folder([
+                        ("a.jpg", Node::file(b"jpeg bytes")),
+                        ("b.jpg", Node::file(b"more jpeg bytes")),
+                    ]),
+                )]),
+            )]),
+        );
+        let cache = tempfile::Builder::new()
+            .prefix("arke-stage-test-")
+            .tempdir()
+            .unwrap();
+        let remotes = test_remotes_with(
+            Arc::clone(&devices) as Arc<dyn arke_remote::mtp::Portable>,
+            cache.path().to_path_buf(),
+        );
+        (devices, remotes, cache)
+    }
+
+    fn entries(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, Iterator::count)
+    }
+
+    /// A staging that fails partway, or goes over the limit, deletes its folder again (#529).
+    #[test]
+    fn a_staging_that_fails_leaves_no_folder_behind() {
+        let (_devices, remotes, _cache) = phone();
+        let staged = remotes.cache_dir().join("staged");
+        let dcim = PathBuf::from("mtp://phone/Internal/DCIM");
+        let photo = dcim.join("a.jpg");
+        // The first item is downloaded, then the second isn't there.
+        let failed = stage_local_copies(&remotes, &[photo.clone(), dcim.join("gone.jpg")], 1 << 20);
+        assert!(matches!(failed, Err(RemoteError::NotFound)), "{failed:?}");
+        assert_eq!(entries(&staged), 0, "the partial staging was removed");
+        // A folder is only found too large once its files are downloaded.
+        let too_large = stage_local_copies(&remotes, std::slice::from_ref(&dcim), 12);
+        assert!(matches!(too_large, Err(RemoteError::TooLarge)), "{too_large:?}");
+        assert_eq!(entries(&staged), 0, "the staging over the limit was removed");
+        // One that works keeps its copies.
+        let copies = stage_local_copies(&remotes, &[photo], 1 << 20).unwrap();
+        assert_eq!(std::fs::read(&copies[0]).unwrap(), b"jpeg bytes");
+        assert_eq!(entries(&staged), 1);
+    }
+
+    /// Sets all of a file's times to `when`.
+    fn age(path: &Path, when: SystemTime) {
+        use std::os::windows::fs::FileTimesExt as _;
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_accessed(when)
+            .set_modified(when)
+            .set_created(when);
+        file.set_times(times).unwrap();
+    }
+
+    /// At start, old staging folders and old downloads go; recent ones, a download open in a
+    /// program and folders Arke doesn't make stay (#529).
+    #[test]
+    fn old_copies_are_pruned_and_recent_or_open_ones_kept() {
+        let dir = tempfile::Builder::new()
+            .prefix("arke-prune-test-")
+            .tempdir()
+            .unwrap();
+        let root = dir.path();
+        let now = SystemTime::now();
+        let since = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        let old_stage = root
+            .join("staged")
+            .join(format!("{}-0", since(now - 2 * DAY).as_millis()));
+        let new_stage = root
+            .join("staged")
+            .join(format!("{}-1", since(now).as_millis()));
+        for stage in [&old_stage, &new_stage] {
+            std::fs::create_dir_all(stage.join("DCIM")).unwrap();
+            std::fs::write(stage.join("DCIM").join("a.jpg"), b"x").unwrap();
+        }
+        let fetched = root.join("0123456789abcdef");
+        std::fs::create_dir_all(&fetched).unwrap();
+        let (old, open, fresh) = (
+            fetched.join("old.jpg"),
+            fetched.join("open.jpg"),
+            fetched.join("fresh.jpg"),
+        );
+        let other = root.join("not-ours");
+        std::fs::create_dir_all(&other).unwrap();
+        let foreign = other.join("keep.txt");
+        for file in [&old, &open, &fresh, &foreign] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        for file in [&old, &open, &foreign] {
+            age(file, now - 2 * DAY);
+        }
+        let held = std::fs::File::open(&open).unwrap();
+
+        prune_cache(root, now);
+        assert!(!old_stage.exists(), "an old staging folder goes");
+        assert!(new_stage.join("DCIM").join("a.jpg").exists());
+        assert!(!old.exists(), "an old download goes");
+        assert!(open.exists(), "a download open in a program stays");
+        assert!(fresh.exists());
+        assert!(foreign.exists(), "folders Arke doesn't make are left alone");
+
+        drop(held);
+        prune_cache(root, now + 2 * DAY);
+        assert!(!fetched.exists(), "an old folder left empty goes too");
+        assert!(!new_stage.exists());
+        assert!(foreign.exists());
+    }
+
+    #[test]
+    fn staging_folders_are_dated_by_their_names() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_millis(1_767_323_045_123);
+        assert_eq!(staged_time("1767323045123-4"), Some(t));
+        assert_eq!(staged_time("photos"), None);
+        assert!(is_fetch_folder("0123456789abcdef"));
+        assert!(!is_fetch_folder("staged"));
+        assert!(!is_stale(None, SystemTime::now()), "an unknown time is never old");
+    }
 
     /// A connected phone shows under This PC, opening its `mtp://` location (#292).
     #[test]

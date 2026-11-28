@@ -554,6 +554,7 @@ impl Remotes {
             && meta.len() == entry.size
             && same_time(meta.modified().ok(), entry.modified)
         {
+            mark_used(&local);
             return Ok(local);
         }
         let part = local.with_extension("arke-part");
@@ -582,6 +583,14 @@ impl Remotes {
     /// Whether this server speaks WebDAV.
     pub const fn is_dav(url: &RemoteUrl) -> bool {
         matches!(url.scheme, Scheme::Dav | Scheme::Davs)
+    }
+}
+
+/// Sets a cached copy's last access time to now: the app prunes the cache by when a copy was
+/// last used (#529), and Windows doesn't always keep that time itself. Best effort.
+fn mark_used(path: &Path) {
+    if let Ok(file) = std::fs::File::options().write(true).open(path) {
+        let _ = file.set_times(std::fs::FileTimes::new().set_accessed(SystemTime::now()));
     }
 }
 

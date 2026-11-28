@@ -16,9 +16,13 @@
 //! first asks what they are; a drag lists them before it can leave the window, so its object
 //! never waits.
 //!
-//! Cut: another program that moves the files says so with `Paste Succeeded` (the shell's
-//! delete-on-paste), and then only the originals whose bytes it read in full are deleted. Drags
-//! offer copy only.
+//! Cut: a program can't move virtual files itself, so when it reports a move (`Paste Succeeded`,
+//! the shell's delete-on-paste, or `Performed DropEffect` / `Logical Performed DropEffect`), the
+//! move is finished here: the originals whose bytes it read in full are deleted, and the rest as
+//! their reads complete. Nothing that wasn't read in full is deleted. Drags offer copy only.
+//!
+//! Debug lines (target `arke::remote_clip`) say what programs ask for and set, and when a file
+//! is read in full.
 
 #![allow(
     clippy::ref_as_ptr,
@@ -50,7 +54,8 @@ use windows::Win32::System::Com::{
     TYMED, TYMED_HGLOBAL, TYMED_ISTREAM,
 };
 use windows::Win32::System::DataExchange::{
-    GetClipboardOwner, GetClipboardSequenceNumber, RegisterClipboardFormatW,
+    GetClipboardFormatNameW, GetClipboardOwner, GetClipboardSequenceNumber,
+    RegisterClipboardFormatW,
 };
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{OleInitialize, OleSetClipboard};
@@ -64,6 +69,9 @@ use super::{DROPEFFECT_COPY, DROPEFFECT_MOVE, DragOutcome, Global};
 use crate::remote_shell::{Listing, RemoteItems, VirtualItem};
 use crate::shell::{DragImage, ShellError};
 
+/// The target of this module's debug lines.
+const LOG: &str = "arke::remote_clip";
+
 /// How long a read waits for the next piece of the file; the backends time out on their own
 /// before this (a step on a phone, a chunk on a server).
 const READ_WAIT: Duration = Duration::from_secs(120);
@@ -75,6 +83,8 @@ struct Formats {
     contents: u16,
     effect: u16,
     pasted: u16,
+    performed: u16,
+    logical: u16,
 }
 
 impl Formats {
@@ -88,6 +98,8 @@ impl Formats {
                 contents: register(w!("FileContents")),
                 effect: register(w!("Preferred DropEffect")),
                 pasted: register(w!("Paste Succeeded")),
+                performed: register(w!("Performed DropEffect")),
+                logical: register(w!("Logical Performed DropEffect")),
             }
         })
     }
@@ -96,6 +108,33 @@ impl Formats {
     const fn in_memory(self, format: u16) -> bool {
         format == self.descriptor || format == self.effect
     }
+
+    /// The name of a format a program sets to say what its paste or drop did, if it is one.
+    const fn reported(self, format: u16) -> Option<&'static str> {
+        if format == self.pasted {
+            Some("Paste Succeeded")
+        } else if format == self.performed {
+            Some("Performed DropEffect")
+        } else if format == self.logical {
+            Some("Logical Performed DropEffect")
+        } else {
+            None
+        }
+    }
+}
+
+/// A clipboard format's name, for debug lines.
+fn format_name(format: u16) -> String {
+    let mut name = [0u16; 128];
+    // SAFETY: the buffer is valid for its whole length.
+    let len = unsafe { GetClipboardFormatNameW(u32::from(format), &mut name) };
+    usize::try_from(len)
+        .ok()
+        .filter(|&n| n > 0 && n <= name.len())
+        .map_or_else(
+            || format!("format {format}"),
+            |n| String::from_utf16_lossy(&name[..n]),
+        )
 }
 
 const fn format_of(format: u16, tymed: TYMED) -> FORMATETC {
@@ -203,6 +242,40 @@ unsafe fn medium_number(medium: &STGMEDIUM) -> Option<u32> {
         let _ = GlobalUnlock(global);
         Some(value)
     }
+}
+
+/// A medium's value, for debug lines: the number in it, or its size and kind.
+///
+/// # Safety
+/// `medium` must be a valid medium.
+unsafe fn describe_medium(medium: &STGMEDIUM) -> String {
+    if medium.tymed != TYMED_HGLOBAL.0.cast_unsigned() {
+        return format!("tymed {}", medium.tymed);
+    }
+    // SAFETY: the medium holds an HGLOBAL, as its tymed says.
+    let (size, number) = unsafe { (GlobalSize(medium.u.hGlobal), medium_number(medium)) };
+    match number {
+        Some(value) if size == 4 => format!("{value:#x}"),
+        Some(value) => format!("{size} bytes, starting {value:#x}"),
+        None => format!("{size} bytes"),
+    }
+}
+
+/// Deletes the originals of items another program moved, read in full, on a thread of its own.
+fn delete_moved(remotes: &Arc<Remotes>, urls: Vec<RemoteUrl>) {
+    if urls.is_empty() {
+        return;
+    }
+    log::debug!(target: LOG, "deleting originals moved to another program: {urls:?}");
+    let remotes = Arc::clone(remotes);
+    crate::explorer::spawn_thread("remote-moved-out", move || {
+        for url in urls {
+            match remotes.delete(&url, &arke_remote::NoProgress) {
+                Ok(()) => log::info!("{url} moved to another program, original deleted"),
+                Err(err) => log::warn!("{url} not deleted after a move to another program: {err}"),
+            }
+        }
+    });
 }
 
 /// What a program reading a file is told when the server fails.
@@ -386,8 +459,15 @@ impl Position {
             // shows on the next read).
             let _ = download.fill();
         }
-        if download.ended && download.at == download.piece.len() {
+        if download.ended
+            && download.at == download.piece.len()
+            && !source.listing.was_read(source.index)
+        {
             source.listing.mark_read(source.index);
+            log::debug!(target: LOG, "read in full by another program: {}", source.url);
+            if source.listing.moved_out() {
+                delete_moved(&source.remotes, source.listing.take_fully_read());
+            }
         }
         Ok(filled)
     }
@@ -579,8 +659,6 @@ struct RemoteData {
     /// Lists the items when first asked. A drag's are listed before (its object lives on the UI
     /// thread, which must never wait on the server).
     may_list: bool,
-    /// The originals of a cut were deleted already.
-    moved: AtomicBool,
 }
 
 impl RemoteData {
@@ -597,7 +675,6 @@ impl RemoteData {
             effect,
             store,
             may_list,
-            moved: AtomicBool::new(false),
         }
         .into())
     }
@@ -643,27 +720,26 @@ impl RemoteData {
         })
     }
 
-    /// Another program says how its paste went (`Paste Succeeded`). After it moved a cut, the
-    /// originals whose bytes it read in full are deleted (the shell's delete-on-paste), once.
-    fn pasted(&self, effect: u32) {
+    /// Another program says what its paste or drop did (`format`, see [`Formats::reported`]).
+    /// It can't move virtual files itself, so a move of a cut is finished here: the originals it
+    /// read in full are deleted now, the others once their reads complete. Each goes once.
+    fn reported(&self, format: &str, effect: u32) {
+        let listing = self.items.listed();
+        log::debug!(
+            target: LOG,
+            "{format} = {effect:#x}: cut {}, listed {}, read in full {:?}",
+            self.items.cut,
+            listing.is_some(),
+            listing.as_ref().map(|l| l.fully_read()),
+        );
         if !self.items.cut || effect & DROPEFFECT_MOVE == 0 {
             return;
         }
-        let Some(listing) = self.items.listed() else {
+        let Some(listing) = listing else {
             return;
         };
-        let done = listing.fully_read();
-        if done.is_empty() || self.moved.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        let remotes = Arc::clone(&self.items.remotes);
-        crate::explorer::spawn_thread("remote-moved-out", move || {
-            for url in done {
-                if let Err(err) = remotes.delete(&url, &arke_remote::NoProgress) {
-                    log::warn!("{url} not deleted after a move to another program: {err}");
-                }
-            }
-        });
+        listing.set_moved_out();
+        delete_moved(&self.items.remotes, listing.take_fully_read());
     }
 }
 
@@ -674,6 +750,15 @@ impl IDataObject_Impl for RemoteData_Impl {
             return Err(E_INVALIDARG.into());
         };
         let formats = Formats::get();
+        if log::log_enabled!(target: LOG, log::Level::Debug) {
+            log::debug!(
+                target: LOG,
+                "another program asks for {} (index {}, tymed {})",
+                format_name(asked.cfFormat),
+                asked.lindex,
+                asked.tymed,
+            );
+        }
         if asked.cfFormat == formats.contents {
             if asked.tymed & TYMED_ISTREAM.0.cast_unsigned() == 0 {
                 return Err(DV_E_TYMED.into());
@@ -736,12 +821,19 @@ impl IDataObject_Impl for RemoteData_Impl {
     ) -> windows::core::Result<()> {
         // SAFETY: the caller's FORMATETC and medium, valid for the call (or null).
         let (asked, given) = unsafe { (format.as_ref(), medium.as_ref()) };
-        if let (Some(asked), Some(given)) = (asked, given)
-            && asked.cfFormat == Formats::get().pasted
-            // SAFETY: the caller's valid medium.
-            && let Some(effect) = unsafe { medium_number(given) }
-        {
-            self.pasted(effect);
+        if let (Some(asked), Some(given)) = (asked, given) {
+            if log::log_enabled!(target: LOG, log::Level::Debug) {
+                // SAFETY: the caller's valid medium.
+                let value = unsafe { describe_medium(given) };
+                let name = format_name(asked.cfFormat);
+                log::debug!(target: LOG, "another program sets {name}: {value}");
+            }
+            if let Some(name) = Formats::get().reported(asked.cfFormat)
+                // SAFETY: the caller's valid medium.
+                && let Some(effect) = unsafe { medium_number(given) }
+            {
+                self.reported(name, effect);
+            }
         }
         // SAFETY: the caller's data, passed on with its ownership.
         unsafe { self.store.SetData(format, medium, release.as_bool()) }
@@ -830,6 +922,7 @@ fn place(items: Arc<RemoteItems>) -> Result<u32, ShellError> {
     } else {
         DROPEFFECT_COPY
     };
+    let count = items.sources.len();
     let data = RemoteData::create(items, effect, true)?;
     let mut tries = 0;
     loop {
@@ -852,6 +945,10 @@ fn place(items: Arc<RemoteItems>) -> Result<u32, ShellError> {
             GetClipboardOwner().map_or(0, |h| h.0.expose_provenance()),
         )
     };
+    log::debug!(
+        target: LOG,
+        "on the clipboard: {count} items, effect {effect:#x}, sequence {seq}"
+    );
     *PLACED.lock() = Some((seq, owner));
     ON_CLIPBOARD.with(|d| *d.borrow_mut() = Some(data));
     Ok(seq)
@@ -1102,6 +1199,35 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// A program that reports a move of a cut (here with `Performed DropEffect`; `Paste
+    /// Succeeded` works the same) has the move finished here, as files are read in full; a
+    /// copy is never moved.
+    #[test]
+    fn a_reported_move_of_a_cut_is_finished_here() {
+        let (remotes, _cache) = phone();
+        for cut in [false, true] {
+            let items = RemoteItems::new(
+                Arc::clone(&remotes),
+                vec![PathBuf::from("mtp://phone/Internal/DCIM")],
+                cut,
+            );
+            let listed = Arc::clone(&items);
+            std::thread::spawn(move || {
+                let _com = ComThread::init();
+                let data = RemoteData::create(items, DROPEFFECT_MOVE, true).unwrap();
+                let listing = listed.listing().unwrap();
+                let format = format_of(Formats::get().performed, TYMED_HGLOBAL);
+                let medium = global_medium(&DROPEFFECT_MOVE.to_le_bytes()).unwrap();
+                // SAFETY: a valid format and medium; the object takes the medium (release).
+                unsafe { data.SetData(&raw const format, &raw const medium, true) }.unwrap();
+                assert_eq!(listing.moved_out(), cut);
+                assert!(listing.fully_read().is_empty(), "nothing was read yet");
+            })
+            .join()
+            .unwrap();
+        }
     }
 
     /// A drag's object lists nothing itself: before its items are listed it describes nothing.

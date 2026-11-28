@@ -280,6 +280,48 @@ const fn index_after_move(ix: usize, from: usize, to: usize) -> usize {
 }
 
 #[cfg(test)]
+mod sign_in_reopen_tests {
+    use super::reopen_path_after_sign_in as reopen;
+    use std::path::PathBuf;
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn fills_in_the_user_that_signed_in() {
+        let done = p("http://arke@127.0.0.1:63110");
+        assert_eq!(
+            reopen(p("http://127.0.0.1:63110/docs/a"), &done),
+            p("http://arke@127.0.0.1:63110/docs/a")
+        );
+        assert_eq!(
+            reopen(p("http://127.0.0.1:63110"), &done),
+            p("http://arke@127.0.0.1:63110")
+        );
+        assert_eq!(
+            reopen(p("http://other@127.0.0.1:63110/docs"), &done),
+            p("http://arke@127.0.0.1:63110/docs")
+        );
+    }
+
+    #[test]
+    fn leaves_everything_else_alone() {
+        let done = p("http://arke@127.0.0.1:63110/x");
+        for same in [
+            "http://arke@127.0.0.1:63110/docs",
+            "http://127.0.0.1:63111/docs",
+            "https://127.0.0.1:63110/docs",
+            "http://example.com:63110/docs",
+            r"\\server\share\docs",
+            r"C:\docs",
+        ] {
+            assert_eq!(reopen(p(same), &done), p(same), "{same}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod tab_order_tests {
     use super::index_after_move;
 
@@ -633,9 +675,10 @@ impl Workspace {
                 }
                 // Reopen where sign-in was asked for (that folder, not just the server), or open
                 // the new location in the active tab.
-                let (view, path) = slot
-                    .after
-                    .unwrap_or_else(|| (self.active_view().clone(), url));
+                let (view, path) = match slot.after {
+                    Some((view, path)) => (view, reopen_path_after_sign_in(path, &place.url)),
+                    None => (self.active_view().clone(), url),
+                };
                 view.update(cx, |v, cx| v.navigate(path, arke_core::NavKind::New, cx));
             }
         }
@@ -663,6 +706,31 @@ impl Workspace {
     pub(crate) fn net_dialog_for_test(&self) -> Option<Entity<NetDialog>> {
         self.net_dialog.as_ref().map(|slot| slot.dialog.clone())
     }
+}
+
+/// Where to reopen `asked` after signing in at `signed_in`: the same folder, but with the user
+/// that signed in when it is on the same server and typed without that user (an address like
+/// `http://host/` has no password saved under it, so asking again would never end).
+pub(crate) fn reopen_path_after_sign_in(asked: PathBuf, signed_in: &Path) -> PathBuf {
+    use arke_core::remote::RemoteUrl;
+    let (Some(url), Some(done)) = (
+        RemoteUrl::from_path(&asked),
+        RemoteUrl::from_path(signed_in),
+    ) else {
+        return asked;
+    };
+    if url.scheme != done.scheme
+        || url.host != done.host
+        || url.port != done.port
+        || url.user == done.user
+    {
+        return asked;
+    }
+    RemoteUrl {
+        user: done.user,
+        ..url
+    }
+    .to_path()
 }
 
 /// Actual accent color for the setting; `None` is the default Arke orange.

@@ -26,7 +26,8 @@ use windows::Win32::System::Time::{
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures,
     FOLDERID_Profile, FOLDERID_Videos, KF_FLAG_DONT_VERIFY, SEE_MASK_FLAG_HINST_IS_SITE,
-    SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHGetKnownFolderPath, ShellExecuteExW,
+    SEE_MASK_FLAG_LOG_USAGE, SEE_MASK_NOASYNC, SHARD_PATHW, SHAddToRecentDocs, SHELLEXECUTEINFOW,
+    SHGetKnownFolderPath, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{GUID, Interface, PCWSTR};
@@ -829,7 +830,9 @@ impl Shell for WinShell {
         let mut info = SHELLEXECUTEINFOW {
             cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
             // NOASYNC: return only when done, since this thread exits right after.
+            // LOG_USAGE: this open is the user's own, so the Shell may count it as usage.
             fMask: SEE_MASK_NOASYNC
+                | SEE_MASK_FLAG_LOG_USAGE
                 | if site.is_some() {
                     SEE_MASK_FLAG_HINST_IS_SITE
                 } else {
@@ -847,6 +850,13 @@ impl Shell for WinShell {
         // the site, which the shell only borrows for the call.
         let result = unsafe { ShellExecuteExW(&raw mut info) };
         drop(site);
+        if result.is_ok() && records_as_recent(path) {
+            // File Explorer does this for the files it opens; the Shell then lists the file in the
+            // Recent items and in the opening app's taskbar jump list (#532). It honors the
+            // "Show recently opened items" setting and the NoRecentDocsHistory policy itself.
+            // SAFETY: file is a NUL-terminated wide path that lives past the call.
+            unsafe { SHAddToRecentDocs(SHARD_PATHW.0 as u32, Some(file.as_ptr().cast())) };
+        }
         if com.is_ok() {
             // SAFETY: pairs with the successful CoInitializeEx above.
             unsafe { CoUninitialize() };
@@ -2092,6 +2102,24 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn shortcuts_are_not_recorded_as_recent() {
+        assert!(is_lnk(Path::new(r"C:\x\a.LNK")));
+        assert!(!is_lnk(Path::new(r"C:\x\a.txt")));
+        assert!(!records_as_recent(Path::new(r"C:\x\a.lnk")));
+    }
+
+    #[test]
+    fn arke_temp_copies_are_not_recorded_as_recent() {
+        let temp = Path::new(r"C:\Users\u\AppData\Local\Temp");
+        assert!(in_arke_temp(&temp.join(r"Arke\remote\h\a.txt"), temp));
+        assert!(in_arke_temp(&temp.join(r"ARKE\Remote\a.txt"), temp));
+        assert!(in_arke_temp(&temp.join(r"Arke drops\1\a.txt"), temp));
+        assert!(!in_arke_temp(&temp.join("a.txt"), temp));
+        assert!(!in_arke_temp(&temp.join(r"Arkeology\a.txt"), temp));
+        assert!(!in_arke_temp(Path::new(r"C:\Docs\a.txt"), temp));
+    }
+
+    #[test]
     fn format_drive_codes_map_to_errors() {
         assert!(format_drive_result(0).is_ok());
         assert!(format_drive_result(0xFFFF_FFFE).is_ok());
@@ -2148,6 +2176,30 @@ mod tests {
         assert!(!s.contains('%'), "{s}");
         assert!(WinShell.expand_env("~").len() > 3);
     }
+}
+
+/// Whether a file Arke just opened goes into the Shell's recent documents: not folders and not
+/// shortcuts, which are resolved to their target before opening, and not Arke's own temporary
+/// copies (remote downloads), whose entries would go dead once the cache is pruned.
+fn records_as_recent(path: &Path) -> bool {
+    !is_lnk(path) && !in_arke_temp(path, &std::env::temp_dir()) && !path.is_dir()
+}
+
+/// Whether `path` is under Arke's folders in `temp`: `Arke` (holds the remote cache, see
+/// `paths::remote_cache_dir`) or `Arke drops`. Case-insensitive, as Windows paths are. Pure.
+fn in_arke_temp(path: &Path, temp: &Path) -> bool {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let path = lower(path);
+    [crate::paths::APP_DIR, "Arke drops"].iter().any(|name| {
+        let root = lower(&temp.join(name));
+        path.strip_prefix(&root)
+            .is_some_and(|rest| rest.starts_with(['\\', '/']))
+    })
+}
+
+fn is_lnk(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
 }
 
 /// Explorer's "Choose another app" for one file: the `openas` verb Windows registers on the

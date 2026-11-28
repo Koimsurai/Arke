@@ -98,7 +98,7 @@ sha2 = "0.10"
 minisign-verify = "0.2.5"
 minisign = { version = "0.7.9", default-features = false }
 # The release tooling reads the signing key's bytes itself (xtask `signing_key`).
-base64 = "0.22"
+base64 = "0.23"
 
 # ─── Lints (crates opt in with `[lints] workspace = true`)
 [workspace.lints.rust]

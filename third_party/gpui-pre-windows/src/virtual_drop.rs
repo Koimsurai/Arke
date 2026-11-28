@@ -91,12 +91,12 @@ pub(crate) fn offers_virtual_files(data: &IDataObject) -> bool {
     })
 }
 
-/// Logs the formats `data` offers (a drag nothing here can take).
-pub(crate) fn log_formats(data: &IDataObject) {
+/// The formats `data` offers, by name, at most 64 (for a log line).
+fn format_names(data: &IDataObject) -> Vec<String> {
     // SAFETY: enumerating is read-only; each FORMATETC's target device is freed as documented.
-    let formats = unsafe {
+    unsafe {
         let Ok(list) = data.EnumFormatEtc(DATADIR_GET.0 as u32) else {
-            return;
+            return Vec::new();
         };
         let mut formats = Vec::new();
         loop {
@@ -114,7 +114,7 @@ pub(crate) fn log_formats(data: &IDataObject) {
             let name = if len > 0 {
                 String::from_utf16_lossy(&name[..len as usize])
             } else {
-                format.cfFormat.to_string()
+                standard_format_name(format.cfFormat)
             };
             formats.push(format!("{name} (tymed {})", format.tymed));
             if formats.len() >= 64 {
@@ -122,6 +122,72 @@ pub(crate) fn log_formats(data: &IDataObject) {
             }
         }
         formats
-    };
-    log::info!("drag offers no files; formats: {}", formats.join(", "));
+    }
+}
+
+/// The name of a predefined clipboard format, which `GetClipboardFormatNameW` doesn't know.
+fn standard_format_name(format: u16) -> String {
+    match format {
+        1 => "CF_TEXT".to_owned(),
+        2 => "CF_BITMAP".to_owned(),
+        8 => "CF_DIB".to_owned(),
+        13 => "CF_UNICODETEXT".to_owned(),
+        15 => "CF_HDROP".to_owned(),
+        16 => "CF_LOCALE".to_owned(),
+        17 => "CF_DIBV5".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// Logs the formats `data` offers (a drag nothing here can take).
+pub(crate) fn log_formats(data: &IDataObject) {
+    log::info!(
+        "drag offers no files; formats: {}",
+        format_names(data).join(", ")
+    );
+}
+
+/// What a drop takes from a data object, for the log: `paths` is what the drop lists.
+fn describe_choice(offers_virtual: bool, paths: &[PathBuf]) -> String {
+    if is_virtual_drop(paths) {
+        "virtual files (FileGroupDescriptor + FileContents)".to_owned()
+    } else if offers_virtual {
+        format!(
+            "CF_HDROP, {} path(s); virtual files are offered too and left unused",
+            paths.len()
+        )
+    } else {
+        format!("CF_HDROP, {} path(s)", paths.len())
+    }
+}
+
+/// Logs the formats a drop offers and which of them it takes, so a report says what the source
+/// handed over (a source can offer real files and virtual ones at once, and the two end up with
+/// different attributes).
+pub(crate) fn log_drop(data: &IDataObject, paths: &[PathBuf]) {
+    log::info!(
+        "drop offers: {}; taking: {}",
+        format_names(data).join(", "),
+        describe_choice(offers_virtual_files(data), paths)
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describes_which_format_a_drop_takes() {
+        let marker = [PathBuf::from(VIRTUAL_DROP_ROOT)];
+        let files = [PathBuf::from(r"C:\a.txt"), PathBuf::from(r"C:\b.txt")];
+        assert!(describe_choice(true, &marker).starts_with("virtual files"));
+        assert_eq!(describe_choice(false, &files), "CF_HDROP, 2 path(s)");
+        assert!(describe_choice(true, &files).contains("left unused"));
+    }
+
+    #[test]
+    fn names_the_predefined_formats() {
+        assert_eq!(standard_format_name(15), "CF_HDROP");
+        assert_eq!(standard_format_name(999), "999");
+    }
 }

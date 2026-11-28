@@ -482,12 +482,11 @@ impl Explorer {
         if !self.flyout_held(window) {
             return;
         }
-        match self.flyout.back.take() {
-            Some(back) => window.focus(&back, cx),
-            None => {
-                self.toolbar.at = Some(button);
-                window.focus(&self.toolbar.focus, cx);
-            }
+        if let Some(back) = self.flyout.back.take() {
+            window.focus(&back, cx);
+        } else {
+            self.toolbar.at = Some(button);
+            window.focus(&self.toolbar.focus, cx);
         }
         cx.notify();
     }

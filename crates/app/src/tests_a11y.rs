@@ -1386,7 +1386,7 @@ fn the_sort_flyout_works_from_the_keyboard(cx: &mut TestAppContext) {
     let modified = t!("col.modified").into_owned();
     assert_eq!(
         choice(cx),
-        ("RadioButton".to_owned(), name.clone(), "True".to_owned()),
+        ("RadioButton".to_owned(), name, "True".to_owned()),
         "the focus is on the column sorted by"
     );
     cx.simulate_keystrokes("down");

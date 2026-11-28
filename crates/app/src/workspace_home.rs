@@ -39,7 +39,7 @@ impl Workspace {
     }
 
     /// Removes the Home page the active tab shows and returns it.
-    fn take_home_here(&mut self) -> Option<HomeView> {
+    pub(super) fn take_home_here(&mut self) -> Option<HomeView> {
         let ix = self.home_pages.iter().position(|p| self.shows(&p.owner))?;
         Some(self.home_pages.remove(ix))
     }

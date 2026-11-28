@@ -180,3 +180,35 @@ fn home_cards_follow_the_single_click_setting(cx: &mut TestAppContext) {
     wait_until(cx, &view, "folder", loaded(r"C:\w\a"));
     crate::prefs::apply(&Settings::default());
 }
+
+/// Hiding the sidebar's Favorites section takes Home's favorite cards with it (#539), showing it
+/// again brings them back, and collapsing it keeps them.
+#[gpui::test]
+fn home_follows_hidden_favorites(cx: &mut TestAppContext) {
+    use crate::settings::SidebarSection;
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\w", vec![dir("a")]);
+    fs.insert_dir(p("a"), Vec::new());
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\w");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\w"));
+    change(cx, |st| st.favorites = Some(vec![p("a")]));
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    refresh(cx);
+    let card_drawn = |cx: &mut VisualTestContext| cx.debug_bounds("home-favorite a").is_some();
+    assert!(card_drawn(cx), "the card is shown");
+
+    change(cx, |st| st.set_hidden(SidebarSection::Favorites, true));
+    refresh(cx);
+    assert!(!card_drawn(cx), "hidden in the sidebar: no card on Home");
+
+    change(cx, |st| st.set_hidden(SidebarSection::Favorites, false));
+    refresh(cx);
+    assert!(card_drawn(cx), "shown again: the card is back");
+
+    change(cx, |st| st.toggle_collapsed(SidebarSection::Favorites));
+    refresh(cx);
+    assert!(card_drawn(cx), "collapsed is not hidden: the card stays");
+}

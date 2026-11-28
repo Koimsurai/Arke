@@ -48,6 +48,8 @@ mod details;
 mod dnd;
 #[path = "explorer_filters.rs"]
 mod filters;
+#[path = "explorer_fold.rs"]
+mod fold;
 #[path = "explorer_folder_view.rs"]
 mod folder_view;
 #[path = "explorer_groups.rs"]

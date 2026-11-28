@@ -29,6 +29,7 @@ use gpui::{
     WindowControlArea, anchored, deferred, div, img, prelude::*, px, svg, uniform_list,
 };
 
+use super::fold::{self, SelectionLayout, SelectionParts, Summary};
 use super::layout;
 use super::ops::DeletePermanently;
 use super::toolbar::ToolbarStop as _;
@@ -370,33 +371,65 @@ impl Explorer {
 
     pub(super) fn render_selection_actions(
         &self,
-        compact: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // `compact` decides whether the summary includes the total size; action buttons are always
-        // icon-only to keep the bar uncluttered.
-        let narrow = compact;
+        // Action buttons are always icon-only to keep the bar uncluttered.
         let compact = true;
         let count = self.selection.len();
         // Split view shows only the count, leaving room for "Copy to/Move to <destination>".
-        let mut summary = if self.pane.split {
+        let short = if self.pane.split {
             t!("sel.count_short", count = format_count(count)).into_owned()
         } else {
             t!("sel.count", count = format_count(count)).into_owned()
         };
-        // Skip the total size when narrow (including split view) to leave room for actions.
-        if let Some(size) = self.selected_size().filter(|_| !narrow) {
-            let _ = write!(summary, " · {}", format_size(size));
-        }
+        let full = match self.selected_size().filter(|_| !self.pane.split) {
+            Some(size) => format!("{short} · {}", format_size(size)),
+            None => short.clone(),
+        };
         // Split view with both sides on different folders: Copy to/Move to take the room of the
         // regular buttons. Same folder: they'd copy items onto themselves, so they're left out and
         // the regular buttons come back.
-        let Some(peer_labels) = self.selection_fit(&summary, count, window) else {
+        let peer = self.peer_target();
+        let order = hide_order(peer.is_some(), count);
+        let parts = self.selection_parts(&full, &short, count, order, peer, window);
+        let layout = self.selection_layout(&parts, window);
+        if layout.folded() {
             return self.render_folded_selection(count, cx);
+        }
+        let shows = |act: Act| {
+            order
+                .iter()
+                .position(|a| *a == act)
+                .is_some_and(|ix| layout.shows(ix))
         };
-        let peer_actions = self.render_peer_actions(peer_labels, cx);
-        let crowded = peer_actions.is_some();
+        let summary = match layout.summary {
+            Summary::Pill => self.count_pill(count).into_any_element(),
+            form => div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(theme::s_8())
+                .mr(theme::s_4())
+                // The size the window's text has anyway, set here because `selection_parts`
+                // measures the summary at it.
+                .text_size(theme::fs_14())
+                .font_weight(theme::FW_STRONG)
+                .child(
+                    div()
+                        .size(theme::s_6())
+                        .rounded(theme::R_FULL)
+                        .bg(theme::signal()),
+                )
+                .child(if form == Summary::Full { full } else { short })
+                .into_any_element(),
+        };
+        let peer_actions = self.render_peer_actions(
+            layout.labels,
+            shows(Act::CopyToPeer),
+            shows(Act::MoveToPeer),
+            cx,
+        );
         div()
             .debug_selector(|| "selection-actions".to_owned())
             .relative()
@@ -406,30 +439,12 @@ impl Explorer {
             .items_center()
             .gap(theme::s_4())
             .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(theme::s_8())
-                    .mr(theme::s_4())
-                    // The size the window's text has anyway, set here because `selection_width`
-                    // measures the summary at it.
-                    .text_size(theme::fs_14())
-                    .font_weight(theme::FW_STRONG)
-                    .child(
-                        div()
-                            .size(theme::s_6())
-                            .rounded(theme::R_FULL)
-                            .bg(theme::signal()),
-                    )
-                    .child(summary),
-            )
+            .child(summary)
             .child(vertical_divider())
             .children(peer_actions)
-            // Omitted next to Copy to/Move to at half width: Enter, Ctrl+X, Ctrl+C and the context
-            // menu still work.
-            .when(!crowded, |d| {
+            // Next to Copy to/Move to there are no Open, Cut, Copy and Rename buttons: Enter,
+            // Ctrl+X, Ctrl+C, F2 and the context menu still work.
+            .when(shows(Act::Open), |d| {
                 d.child(action_button(
                     "sel-open",
                     Icon::ArrowRight,
@@ -440,7 +455,9 @@ impl Explorer {
                         this.open_selected(&OpenSelected, w, cx);
                     }),
                 ))
-                .child(action_button(
+            })
+            .when(shows(Act::Cut), |d| {
+                d.child(action_button(
                     "sel-cut",
                     Icon::Cut,
                     t!("sel.cut"),
@@ -448,7 +465,9 @@ impl Explorer {
                     compact,
                     cx.listener(|this, _: &ClickEvent, w, cx| this.cut_files(&CutFiles, w, cx)),
                 ))
-                .child(action_button(
+            })
+            .when(shows(Act::Copy), |d| {
+                d.child(action_button(
                     "sel-copy",
                     Icon::Copy,
                     t!("sel.copy"),
@@ -457,8 +476,7 @@ impl Explorer {
                     cx.listener(|this, _: &ClickEvent, w, cx| this.copy_files(&CopyFiles, w, cx)),
                 ))
             })
-            // Omitted next to Copy to/Move to (F2 still works) to leave room for them.
-            .when(count == 1 && !crowded, |d| {
+            .when(shows(Act::Rename), |d| {
                 d.child(action_button(
                     "sel-rename",
                     Icon::Rename,
@@ -470,14 +488,18 @@ impl Explorer {
                     }),
                 ))
             })
-            .child(action_button(
-                "sel-delete",
-                Icon::Trash,
-                t!("sel.delete"),
-                Tone::Danger,
-                compact,
-                cx.listener(Self::delete_clicked),
-            ))
+            .when(shows(Act::Delete), |d| {
+                d.child(action_button(
+                    "sel-delete",
+                    Icon::Trash,
+                    t!("sel.delete"),
+                    Tone::Danger,
+                    compact,
+                    cx.listener(Self::delete_clicked),
+                ))
+            })
+            // The buttons that didn't fit, in the selection's menu.
+            .when(layout.more(), |d| d.child(more_button(cx)))
             .child(div().flex_1())
             .child(clear_selection_button(
                 compact,
@@ -486,63 +508,109 @@ impl Explorer {
             .into_any_element()
     }
 
-    /// Whether the selection's buttons, `unfolded` wide, fold into a "⋯" menu: when they would
-    /// leave the path bar under [`super::top_bar::path_compact_below`] (it keeps only the current
-    /// folder then), or when they keep the path bar from showing every level that it would show
-    /// with them folded (#388). If it wouldn't fit even folded, folding gains nothing: the
-    /// buttons stay and the path bar collapses as before. The room is what the path bar and the
-    /// row's info (item count or selection) took on the last frame: their sum doesn't change with
-    /// what the info shows, so the choice settles at once. Before the row was laid out, the
-    /// pane's width decides.
-    pub(crate) fn selection_folds(&self, unfolded: Pixels, count: usize, window: &Window) -> bool {
+    /// The widths the selection's layouts are made of (see [`fold`]), from the tokens they are
+    /// drawn with: the summary (`full` with the size, `short` without), the buttons in `order`
+    /// and, in split view (`peer`), what Copy to/Move to's labels add.
+    fn selection_parts(
+        &self,
+        full: &str,
+        short: &str,
+        count: usize,
+        order: &[Act],
+        peer: Option<&Path>,
+        window: &Window,
+    ) -> SelectionParts {
+        let text =
+            |s: &str| super::top_bar::text_width(s, theme::fs_14(), theme::FW_STRONG, window);
+        // Dot, gap, text and the margin after it.
+        let summary = |s: &str| theme::s_6() + theme::s_8() + text(s) + theme::s_4();
+        let full_w = summary(full);
+        let short_w = if short == full {
+            full_w
+        } else {
+            summary(short)
+        };
+        // The pill: padding, the dot, the gap and the count.
+        let pill = theme::s_6() * 2. + theme::s_6() + theme::s_6() + text(&format_count(count));
+        let divider = px(1.) + theme::s_4() * 2.;
+        let icon_button = theme::s_6() * 2. + theme::icon();
+        // Outlined: a 1 px border on each side.
+        let outlined = theme::s_8() * 2. + theme::icon() + px(2.);
+        let buttons = order
+            .iter()
+            .map(|act| {
+                let w = match act {
+                    Act::MoveToPeer => outlined,
+                    // With the divider that ends Copy to/Move to, 4 px after them.
+                    Act::CopyToPeer => outlined + theme::s_4() + divider,
+                    _ => icon_button,
+                };
+                f32::from(w)
+            })
+            .collect();
+        let labels = peer
+            .filter(|_| self.paper_width >= peer_labels_min())
+            .map_or(px(0.), |peer| {
+                let name = peer_name(peer);
+                [
+                    t!("sel.copy_to", name = name),
+                    t!("sel.move_to", name = name),
+                ]
+                .iter()
+                .map(|label| {
+                    let text = super::top_bar::text_width(
+                        label,
+                        theme::fs_12(),
+                        gpui::FontWeight::NORMAL,
+                        window,
+                    );
+                    // The gap between the icon and the label.
+                    theme::s_6() + text
+                })
+                .fold(px(0.), |sum, w| sum + w)
+            });
+        SelectionParts {
+            full: f32::from(full_w),
+            count: f32::from(short_w),
+            pill: f32::from(pill),
+            buttons,
+            labels: f32::from(labels),
+            more: f32::from(theme::h_ctl_sm()),
+            clear: f32::from(theme::s_8() * 2. + theme::icon_sm()),
+            divider: f32::from(divider),
+            gap: f32::from(theme::s_4()),
+            tight_gap: f32::from(theme::s_2()),
+        }
+    }
+
+    /// How the selection fits the pane row next to the path bar (#388, #528): the summary
+    /// shortens, then the buttons move into "⋯" one at a time, and the path bar loses levels
+    /// only once "● 3 ⋯" is all that's left. The path bar keeps at least
+    /// [`super::top_bar::path_compact_below`] too, below which it shows only the current folder.
+    /// The room is what the path bar and the row's info (item count or selection) took on the
+    /// last frame: their sum doesn't change with what the info shows, so the choice settles at
+    /// once. Before the row was laid out, the pane's width decides between everything and
+    /// "● 3 ⋯".
+    fn selection_layout(&self, parts: &SelectionParts, window: &Window) -> SelectionLayout {
         let path = self.path_slot.get();
         if path <= px(0.) {
             let needs = if self.pane.split { 600. } else { 720. };
-            return self.paper_width < theme::scaled_px(needs);
+            let room = if self.paper_width < theme::scaled_px(needs) {
+                0.
+            } else {
+                f32::INFINITY
+            };
+            return fold::selection_layout(room, 0., parts);
         }
-        let shared = path + self.info_slot.get();
-        let room = shared - unfolded;
-        if room < super::top_bar::path_compact_below() {
-            return true;
-        }
-        let full = self.path_full_width(window);
-        room < full && shared - folded_selection_width(count, window) >= full
-    }
-
-    /// How the selection's buttons fit the pane row next to the path bar (#388): `None` folds
-    /// them into "⋯"; `Some(labels)` shows them, with Copy to/Move to the other side (split view)
-    /// named or as icons. The labels show only when the path bar keeps its room with them too;
-    /// otherwise the icons, and failing that the fold.
-    fn selection_fit(&self, summary: &str, count: usize, window: &Window) -> Option<bool> {
-        let Some(peer) = self.peer_target() else {
-            let unfolded = selection_width(summary, count, None, window);
-            return (!self.selection_folds(unfolded, count, window)).then_some(false);
-        };
-        let name = peer_name(peer);
-        let labels = [
-            t!("sel.copy_to", name = name),
-            t!("sel.move_to", name = name),
-        ]
-        .iter()
-        .map(|label| {
-            let text =
-                super::top_bar::text_width(label, theme::fs_12(), gpui::FontWeight::NORMAL, window);
-            // The gap between the icon and the label.
-            theme::s_6() + text
-        })
-        .fold(px(0.), |sum, w| sum + w);
-        let with_labels = selection_width(summary, count, Some(labels), window);
-        if self.paper_width >= peer_labels_min()
-            && !self.selection_folds(with_labels, count, window)
-        {
-            return Some(true);
-        }
-        let icons = selection_width(summary, count, Some(px(0.)), window);
-        (!self.selection_folds(icons, count, window)).then_some(false)
+        let room = path + self.info_slot.get();
+        let need = self
+            .path_full_width(window)
+            .max(super::top_bar::path_compact_below());
+        fold::selection_layout(f32::from(room), f32::from(need), parts)
     }
 
     /// Records the width of the pane row's info (the item count or the selection's actions) for
-    /// [`Self::selection_folds`], drawing once more when it changed, as the path bar's slot does
+    /// [`Self::selection_layout`], drawing once more when it changed, as the path bar's slot does
     /// (they change together, so this adds no frame of its own).
     fn info_probe(&self) -> impl IntoElement + use<> {
         let slot = Rc::clone(&self.info_slot);
@@ -564,10 +632,6 @@ impl Explorer {
     /// opens the selection's context menu under it: open, cut, copy, rename, delete, copy or
     /// move to the other side are all there.
     fn render_folded_selection(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
-        let mut summary = t!("sel.count", count = format_count(count)).into_owned();
-        if let Some(size) = self.selected_size() {
-            let _ = write!(summary, " · {}", format_size(size));
-        }
         div()
             .debug_selector(|| "selection-actions".to_owned())
             .relative()
@@ -576,60 +640,39 @@ impl Explorer {
             .flex_none()
             .items_center()
             .gap(theme::s_2())
-            .child(
-                div()
-                    .id("sel-count")
-                    .debug_selector(|| "sel-count".to_owned())
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(theme::s_6())
-                    .h(theme::h_ctl_sm())
-                    .px(theme::s_6())
-                    .font_weight(theme::FW_STRONG)
-                    .child(
-                        div()
-                            .size(theme::s_6())
-                            .rounded(theme::R_FULL)
-                            .bg(theme::signal()),
-                    )
-                    .child(format_count(count))
-                    .tooltip_below(summary),
-            )
-            .child(
-                div()
-                    .id("sel-more")
-                    .debug_selector(|| "sel-more".to_owned())
-                    .a11y_button(t!("sel.more"))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .size(theme::h_ctl_sm())
-                    .rounded(theme::r_8())
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::wash()))
-                    .child(
-                        svg()
-                            .path(Icon::More.path())
-                            .size(theme::icon())
-                            .text_color(theme::text_muted()),
-                    )
-                    .tooltip_below(t!("sel.more").to_string())
-                    // A screen reader's Enter and the keyboard in the pane row: opens where
-                    // Shift+F10 would (#322).
-                    .a11y_on_click(open_selection_menu(cx.entity().downgrade()))
-                    .toolbar_menu("sel-more", open_selection_menu(cx.entity().downgrade()))
-                    // Opens on press, like the other menus.
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.open_context_menu(event.position, window, cx);
-                        }),
-                    ),
-            )
+            .child(self.count_pill(count))
+            .child(more_button(cx))
             .into_any_element()
+    }
+
+    /// "● 3", the selection's summary when the pane row is short of room: its tooltip has the
+    /// whole summary.
+    fn count_pill(&self, count: usize) -> impl IntoElement + use<> {
+        let mut summary = t!("sel.count", count = format_count(count)).into_owned();
+        if let Some(size) = self.selected_size() {
+            let _ = write!(summary, " · {}", format_size(size));
+        }
+        div()
+            .id("sel-count")
+            .debug_selector(|| "sel-count".to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(theme::s_6())
+            .h(theme::h_ctl_sm())
+            .px(theme::s_6())
+            // The size the window's text has anyway, which `selection_parts` measures the count
+            // at.
+            .text_size(theme::fs_14())
+            .font_weight(theme::FW_STRONG)
+            .child(
+                div()
+                    .size(theme::s_6())
+                    .rounded(theme::R_FULL)
+                    .bg(theme::signal()),
+            )
+            .child(format_count(count))
+            .tooltip_below(summary)
     }
 
     /// The other pane's folder, when copying or moving there makes sense: split view with the other
@@ -639,37 +682,47 @@ impl Explorer {
         (self.current_path() != Some(peer)).then_some(peer)
     }
 
-    /// Split view: "Copy to/Move to the other side", naming the destination. In a narrow pane
-    /// they show only their icons (the tooltip still names the destination), since a label cut
-    /// down to "…" says nothing.
+    /// Split view: "Copy to/Move to the other side", naming the destination, as far as they are
+    /// drawn (`copy`, `moves`; the rest is in "⋯"). In a narrow pane they show only their icons
+    /// (the tooltip still names the destination), since a label cut down to "…" says nothing.
     fn render_peer_actions(
         &self,
         labels: bool,
+        copy: bool,
+        moves: bool,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let name = peer_name(self.peer_target()?);
+        let name = peer_name(self.peer_target().filter(|_| copy || moves)?);
         Some(
             div()
                 .flex()
                 .min_w_0()
                 .items_center()
                 .gap(theme::s_4())
-                .child(peer_button(
-                    "sel-copy-peer",
-                    Icon::Copy,
-                    t!("sel.copy_to", name = name),
-                    "Alt+C",
-                    labels,
-                    cx.listener(|this, _: &ClickEvent, _, cx| this.transfer_to_peer(false, cx)),
-                ))
-                .child(peer_button(
-                    "sel-move-peer",
-                    Icon::Cut,
-                    t!("sel.move_to", name = name),
-                    "Alt+M",
-                    labels,
-                    cx.listener(|this, _: &ClickEvent, _, cx| this.transfer_to_peer(true, cx)),
-                ))
+                .when(copy, |d| {
+                    d.child(peer_button(
+                        "sel-copy-peer",
+                        Icon::Copy,
+                        t!("sel.copy_to", name = name),
+                        "Alt+C",
+                        labels,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.transfer_to_peer(false, cx);
+                        }),
+                    ))
+                })
+                .when(moves, |d| {
+                    d.child(peer_button(
+                        "sel-move-peer",
+                        Icon::Cut,
+                        t!("sel.move_to", name = name),
+                        "Alt+M",
+                        labels,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.transfer_to_peer(true, cx);
+                        }),
+                    ))
+                })
                 .child(vertical_divider()),
         )
     }
@@ -2600,46 +2653,64 @@ fn peer_name(peer: &Path) -> String {
     )
 }
 
-/// Width of the selection's actions in the pane row, unfolded, from the tokens they are drawn
-/// with (see [`Explorer::render_selection_actions`]): the summary, a divider, then Open, Cut,
-/// Copy (Rename for one item) and Delete, or in split view (`peer`: the width Copy to/Move to's
-/// labels add, zero for icons only) Copy to/Move to the other side and Delete, and the clear
-/// button.
-fn selection_width(summary: &str, count: usize, peer: Option<Pixels>, window: &Window) -> Pixels {
-    let text = super::top_bar::text_width(summary, theme::fs_14(), theme::FW_STRONG, window);
-    // Dot, gap, text and the margin after it.
-    let summary = theme::s_6() + theme::s_8() + text + theme::s_4();
-    let divider = px(1.) + theme::s_4() * 2.;
-    let icon_button = theme::s_6() * 2. + theme::icon();
-    let clear = theme::s_8() * 2. + theme::icon_sm();
-    // The buttons, and how many children of the row they are.
-    let (buttons, children) = if let Some(labels) = peer {
-        // Outlined: a 1 px border on each side. Two of them and a divider, 4 px apart.
-        let outlined = theme::s_8() * 2. + theme::icon() + px(2.);
-        (
-            outlined * 2. + labels + divider + theme::s_4() * 2. + icon_button,
-            2.,
-        )
-    } else {
-        let n = if count == 1 { 5. } else { 4. };
-        (icon_button * n, n)
-    };
-    // The summary, the divider, the buttons, the spacer and the clear button, 4 px apart.
-    let gaps = theme::s_4() * (children + 3.);
-    summary + divider + buttons + clear + gaps
+/// The selection's buttons, as [`hide_order`] lists them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Act {
+    Open,
+    Rename,
+    Cut,
+    Copy,
+    MoveToPeer,
+    CopyToPeer,
+    Delete,
 }
 
-/// How wide the folded selection ("● 3" and "⋯") is: the count's pill and the button, 2 px apart.
-fn folded_selection_width(count: usize, window: &Window) -> Pixels {
-    let text = super::top_bar::text_width(
-        &format_count(count),
-        theme::fs_14(),
-        theme::FW_STRONG,
-        window,
-    );
-    // The pill: padding, the dot, the gap and the count.
-    let pill = theme::s_6() * 2. + theme::s_6() + theme::s_6() + text;
-    pill + theme::s_2() + theme::h_ctl_sm()
+/// The selection's buttons in the order they move into "⋯" as the pane row narrows (#528), the
+/// least used first: Open (Enter and a double click do it), Rename (F2), Cut, Copy, and Delete
+/// last. In split view Copy to/Move to the other side take the place of Open, Cut, Copy and
+/// Rename; Move to goes before Copy to, as Cut goes before Copy.
+const fn hide_order(peer: bool, count: usize) -> &'static [Act] {
+    match (peer, count) {
+        (true, _) => &[Act::MoveToPeer, Act::CopyToPeer, Act::Delete],
+        (false, 1) => &[Act::Open, Act::Rename, Act::Cut, Act::Copy, Act::Delete],
+        (false, _) => &[Act::Open, Act::Cut, Act::Copy, Act::Delete],
+    }
+}
+
+/// "⋯", for the selection's buttons the pane row has no room for: it opens the selection's
+/// context menu under it, which has them all.
+fn more_button(cx: &mut Context<Explorer>) -> impl IntoElement + use<> {
+    div()
+        .id("sel-more")
+        .debug_selector(|| "sel-more".to_owned())
+        .a11y_button(t!("sel.more"))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(theme::h_ctl_sm())
+        .rounded(theme::r_8())
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::wash()))
+        .child(
+            svg()
+                .path(Icon::More.path())
+                .size(theme::icon())
+                .text_color(theme::text_muted()),
+        )
+        .tooltip_below(t!("sel.more").to_string())
+        // A screen reader's Enter and the keyboard in the pane row: opens where Shift+F10 would
+        // (#322).
+        .a11y_on_click(open_selection_menu(cx.entity().downgrade()))
+        .toolbar_menu("sel-more", open_selection_menu(cx.entity().downgrade()))
+        // Opens on press, like the other menus.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.open_context_menu(event.position, window, cx);
+            }),
+        )
 }
 
 /// Opens the selection's menu where Shift+F10 would: "⋯" pressed by a screen reader or from the

@@ -1474,6 +1474,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 paths: ExternalPaths(paths),
             }));
         }
+        crate::virtual_drop::log_drop(idata_obj, &self.1.borrow());
         let input = PlatformInput::FileDrop(FileDropEvent::Submit { position });
         if crate::virtual_drop::is_virtual_drop(&self.1.borrow()) {
             // Virtual files: the drop handler takes the data object to read them from.

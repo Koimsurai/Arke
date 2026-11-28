@@ -317,7 +317,7 @@ dependencies = [
  "rust-i18n",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "unicode-segmentation",
@@ -390,7 +390,7 @@ dependencies = [
  "russh",
  "russh-sftp",
  "rust-i18n",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -8585,7 +8585,7 @@ dependencies = [
  "base64",
  "minisign",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
 ]
 
 [[package]]

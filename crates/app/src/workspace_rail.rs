@@ -41,6 +41,9 @@ pub(super) struct SidebarUi {
     /// scrolled into view there (the active one, once each time it changes).
     pub(super) strip_scroll: gpui::ScrollHandle,
     pub(super) strip_revealed: std::cell::Cell<Option<(usize, gpui::Pixels)>>,
+    /// The tab on top the pointer rests on (its place), as the strip was last laid out: its
+    /// close button shows and takes its room from the title (`workspace_tabstrip.rs`).
+    pub(super) strip_hovered: std::rc::Rc<std::cell::Cell<Option<usize>>>,
     /// The open-over-the-content sidebar just closed and fades out (serial, for the animation id).
     peek_ghost: Option<u64>,
     peek_ghost_task: Option<gpui::Task<()>>,

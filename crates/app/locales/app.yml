@@ -7220,6 +7220,22 @@ sidebar.close_tab:
   es: Cerrar pestaña
   pt-BR: Fechar guia
   ja: タブを閉じる
+sidebar.scroll_tabs_left:
+  en: Scroll tabs left
+  zh-TW: 向左捲動分頁
+  zh-CN: 向左滚动标签页
+  de: Registerkarten nach links scrollen
+  es: Desplazar pestañas a la izquierda
+  pt-BR: Rolar guias para a esquerda
+  ja: タブを左にスクロール
+sidebar.scroll_tabs_right:
+  en: Scroll tabs right
+  zh-TW: 向右捲動分頁
+  zh-CN: 向右滚动标签页
+  de: Registerkarten nach rechts scrollen
+  es: Desplazar pestañas a la derecha
+  pt-BR: Rolar guias para a direita
+  ja: タブを右にスクロール
 sidebar.close_side:
   en: Close active side
   zh-TW: 關閉目前這一側

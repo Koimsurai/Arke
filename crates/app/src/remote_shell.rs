@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use arke_core::remote::RemoteUrl;
 use arke_core::{Entry, EntryKind};
@@ -29,7 +29,8 @@ use crate::shell::{
 
 /// Largest file opened from a server (it is downloaded first).
 const OPEN_MAX: u64 = 4 * 1024 * 1024 * 1024;
-/// Most bytes downloaded to put remote items on the clipboard or drag them out.
+/// Most bytes downloaded to put remote items on the clipboard when they can't go there as
+/// virtual files.
 pub(crate) const STAGE_MAX: u64 = 512 * 1024 * 1024;
 
 fn remote(path: &Path) -> Option<RemoteUrl> {
@@ -169,6 +170,189 @@ fn local_names(dir: &Path) -> HashSet<String> {
     })
 }
 
+// ───────────────────────── Virtual files (#529) ─────────────────────────
+
+/// Longest relative name a file descriptor holds (`cFileName`: 260 units with the terminator).
+const MAX_VIRTUAL_NAME: usize = 259;
+
+/// One file or folder of remote items handed to another program as a virtual file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VirtualItem {
+    /// Where it goes in the target folder: a Windows name for each level, joined by `\`.
+    pub(crate) rel: String,
+    /// The file on the server; `None` for a folder.
+    pub(crate) url: Option<RemoteUrl>,
+    /// Bytes, for files whose size is listed.
+    pub(crate) size: Option<u64>,
+    pub(crate) modified: Option<SystemTime>,
+}
+
+impl VirtualItem {
+    pub(crate) const fn is_dir(&self) -> bool {
+        self.url.is_none()
+    }
+}
+
+/// An item given, and the part of [`Listing::items`] it is.
+#[derive(Debug)]
+pub(crate) struct Top {
+    pub(crate) url: RemoteUrl,
+    pub(crate) range: std::ops::Range<usize>,
+    /// Nothing under it was left out (a folder link, a name too long).
+    pub(crate) whole: bool,
+}
+
+/// Every file and folder of some remote items, each folder before what is in it.
+#[derive(Debug, Default)]
+pub(crate) struct Listing {
+    pub(crate) items: Vec<VirtualItem>,
+    pub(crate) tops: Vec<Top>,
+    /// Per item: a program read all of its bytes (folders: from the start).
+    read: Vec<std::sync::atomic::AtomicBool>,
+}
+
+impl Listing {
+    /// A program read all of item `index`.
+    pub(crate) fn mark_read(&self, index: usize) {
+        if let Some(read) = self.read.get(index) {
+            read.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether a program read all of item `index`.
+    pub(crate) fn was_read(&self, index: usize) -> bool {
+        self.read
+            .get(index)
+            .is_some_and(|read| read.load(Ordering::Relaxed))
+    }
+
+    /// The items given that a program read in full, all of what is under them included: after
+    /// it moved them, only these originals may be deleted.
+    pub(crate) fn fully_read(&self) -> Vec<RemoteUrl> {
+        self.tops
+            .iter()
+            .filter(|top| top.whole && !top.range.is_empty())
+            .filter(|top| top.range.clone().all(|i| self.was_read(i)))
+            .map(|top| top.url.clone())
+            .collect()
+    }
+}
+
+/// Lists remote items as virtual files: each one, and everything under a folder. Folder links
+/// are not followed (they may loop); names too long for a descriptor are left out. Background
+/// thread.
+pub(crate) fn list_virtual(remotes: &Remotes, sources: &[PathBuf]) -> Result<Listing, RemoteError> {
+    let mut listing = Listing::default();
+    let mut taken = HashSet::new();
+    for source in sources {
+        let url = remote(source).ok_or(RemoteError::NotFound)?;
+        let entry = remotes.stat(&url)?;
+        let name = free_name(
+            &arke_remote::hub::local_name(&entry.name),
+            entry.is_dir_like(),
+            &taken,
+        );
+        taken.insert(name.to_lowercase());
+        let start = listing.items.len();
+        let whole = list_tree(remotes, &url, &entry, name, &mut listing.items)?;
+        let range = start..listing.items.len();
+        listing.tops.push(Top { url, range, whole });
+    }
+    listing.read = listing
+        .items
+        .iter()
+        .map(|item| std::sync::atomic::AtomicBool::new(item.is_dir()))
+        .collect();
+    Ok(listing)
+}
+
+/// Adds `entry` as `rel`, and what is in it; whether nothing was left out.
+fn list_tree(
+    remotes: &Remotes,
+    url: &RemoteUrl,
+    entry: &Entry,
+    rel: String,
+    out: &mut Vec<VirtualItem>,
+) -> Result<bool, RemoteError> {
+    if rel.encode_utf16().count() > MAX_VIRTUAL_NAME {
+        log::warn!("not handed to another program, the name is too long: {rel}");
+        return Ok(false);
+    }
+    match entry.kind {
+        EntryKind::Dir => {
+            let mut whole = true;
+            let mut taken = HashSet::new();
+            out.push(VirtualItem {
+                rel: rel.clone(),
+                url: None,
+                size: None,
+                modified: entry.modified,
+            });
+            for child in remotes.list(url)? {
+                let name = free_name(
+                    &arke_remote::hub::local_name(&child.name),
+                    child.is_dir_like(),
+                    &taken,
+                );
+                taken.insert(name.to_lowercase());
+                let child_url = url.join(&child.name);
+                whole &= list_tree(remotes, &child_url, &child, format!("{rel}\\{name}"), out)?;
+            }
+            Ok(whole)
+        }
+        // A folder link on the server is not followed (it may loop).
+        EntryKind::Link { is_dir: true } => Ok(false),
+        EntryKind::File | EntryKind::Link { is_dir: false } => {
+            out.push(VirtualItem {
+                rel,
+                url: Some(url.clone()),
+                size: (entry.kind == EntryKind::File).then_some(entry.size),
+                modified: entry.modified,
+            });
+            Ok(true)
+        }
+    }
+}
+
+/// Remote items copied, cut or dragged to other programs as virtual files (#529): listed when a
+/// program first asks what they are, read from the server only as it reads their bytes.
+pub(crate) struct RemoteItems {
+    pub(crate) remotes: Arc<Remotes>,
+    /// The items given (remote paths), in order.
+    pub(crate) sources: Vec<PathBuf>,
+    /// Cut: a program that moves them may have the originals deleted.
+    pub(crate) cut: bool,
+    listing: Mutex<Option<Arc<Listing>>>,
+}
+
+impl RemoteItems {
+    pub(crate) fn new(remotes: Arc<Remotes>, sources: Vec<PathBuf>, cut: bool) -> Arc<Self> {
+        Arc::new(Self {
+            remotes,
+            sources,
+            cut,
+            listing: Mutex::new(None),
+        })
+    }
+
+    /// The listing, made from the server on the first call (one caller lists, the others wait
+    /// for it). Background thread.
+    pub(crate) fn listing(&self) -> Result<Arc<Listing>, RemoteError> {
+        let mut slot = self.listing.lock();
+        if let Some(listing) = &*slot {
+            return Ok(Arc::clone(listing));
+        }
+        let listing = Arc::new(list_virtual(&self.remotes, &self.sources)?);
+        *slot = Some(Arc::clone(&listing));
+        Ok(listing)
+    }
+
+    /// The listing if it is made already; never waits.
+    pub(crate) fn listed(&self) -> Option<Arc<Listing>> {
+        self.listing.try_lock().and_then(|slot| slot.clone())
+    }
+}
+
 /// A fresh folder under the cache for one staging (clipboard, drag out, copy between servers).
 fn stage_dir(remotes: &Remotes) -> std::io::Result<PathBuf> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -184,8 +368,31 @@ fn stage_dir(remotes: &Remotes) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// A staging folder that is deleted when this is dropped, unless [`Self::keep`] is called: a
+/// staging that fails partway leaves nothing behind (#529).
+struct StageGuard(Option<PathBuf>);
+
+impl StageGuard {
+    /// The folder stays (its copies are in use).
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take()
+            && let Err(err) = std::fs::remove_dir_all(&dir)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            log::info!("staging folder {} not removed: {err}", dir.display());
+        }
+    }
+}
+
 /// Downloads remote items into a new staging folder and returns their local copies, in order
-/// (local paths pass through). Refuses past `max` bytes in total. Background thread.
+/// (local paths pass through). Refuses past `max` bytes in total. If anything fails, the
+/// staging folder is deleted again. Background thread.
 pub(crate) fn stage_local_copies(
     remotes: &Remotes,
     paths: &[PathBuf],
@@ -193,7 +400,7 @@ pub(crate) fn stage_local_copies(
 ) -> Result<Vec<PathBuf>, RemoteError> {
     let progress = OpProgress::default();
     let sink = Sink(&progress);
-    let mut dir: Option<PathBuf> = None;
+    let mut staged = StageGuard(None);
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
         let Some(url) = remote(path) else {
@@ -204,11 +411,11 @@ pub(crate) fn stage_local_copies(
         if progress.bytes.load(Ordering::Relaxed) + entry.size > max {
             return Err(RemoteError::TooLarge);
         }
-        let dir = if let Some(d) = &dir {
+        let dir = if let Some(d) = &staged.0 {
             d.clone()
         } else {
             let d = stage_dir(remotes)?;
-            dir = Some(d.clone());
+            staged.0 = Some(d.clone());
             d
         };
         let local = dir.join(arke_remote::hub::local_name(&entry.name));
@@ -218,7 +425,112 @@ pub(crate) fn stage_local_copies(
         }
         out.push(local);
     }
+    staged.keep();
     Ok(out)
+}
+
+/// How long copies in the download cache are kept: older ones go at the next start (#529).
+const CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Deletes what earlier runs left in the download cache `dir` (#529): staging folders older
+/// than [`CACHE_MAX_AGE`] (copies made for the clipboard or a drag out), and downloaded copies
+/// (opened files, previews) not used for as long and not open in a program now. Only touches
+/// the folders Arke makes there. Background thread.
+pub(crate) fn prune_cache(dir: &Path, now: SystemTime) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "staged" {
+            prune_staged(&entry.path(), now);
+        } else if is_fetch_folder(&name) {
+            prune_fetched(&entry.path(), now);
+        }
+    }
+}
+
+/// Whether `time` is longer ago than [`CACHE_MAX_AGE`]; unknown times are not.
+fn is_stale(time: Option<SystemTime>, now: SystemTime) -> bool {
+    time.is_some_and(|t| now.duration_since(t).is_ok_and(|age| age > CACHE_MAX_AGE))
+}
+
+/// The download cache's folders are named by 16 hex digits of a hash (`Remotes::fetch`).
+fn is_fetch_folder(name: &str) -> bool {
+    name.len() == 16 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// When a staging folder was made, from its name (`<milliseconds since 1970>-<n>`, see
+/// [`stage_dir`]).
+fn staged_time(name: &str) -> Option<SystemTime> {
+    let millis: u64 = name.split_once('-')?.0.parse().ok()?;
+    Some(SystemTime::UNIX_EPOCH + Duration::from_millis(millis))
+}
+
+fn prune_staged(staged: &Path, now: SystemTime) {
+    let Ok(read) = std::fs::read_dir(staged) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let time = staged_time(&entry.file_name().to_string_lossy())
+            .or_else(|| entry.metadata().ok().and_then(|m| m.created().ok()));
+        if !is_stale(time, now) {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(err) = removed {
+            log::info!("old staging {} not removed: {err}", path.display());
+        }
+    }
+}
+
+fn prune_fetched(folder: &Path, now: SystemTime) {
+    let Ok(read) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        // Last used: downloaded (created), or found in the cache again (`Remotes::fetch` sets
+        // the access time then, as Windows may not keep it).
+        let used = [meta.created().ok(), meta.accessed().ok()]
+            .into_iter()
+            .flatten()
+            .max();
+        let path = entry.path();
+        if meta.is_file()
+            && is_stale(used, now)
+            && !in_use(&path)
+            && let Err(err) = std::fs::remove_file(&path)
+        {
+            log::debug!("old download {} not removed: {err}", path.display());
+        }
+    }
+    // An old folder left empty goes too (a new one may be about to get a download).
+    let made = std::fs::metadata(folder).and_then(|m| m.created()).ok();
+    if is_stale(made, now) {
+        let _ = std::fs::remove_dir(folder);
+    }
+}
+
+/// Whether a program has the file open: opening it without sharing then fails.
+fn in_use(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .is_err()
 }
 
 /// HTTP that always fails (WinHTTP unavailable, tests).
@@ -270,6 +582,10 @@ pub(crate) fn start(
             remotes.set_insecure_allowed(&url, true);
         }
     }
+    let cache = remotes.cache_dir().to_path_buf();
+    crate::explorer::spawn_thread("remote-cache-prune", move || {
+        prune_cache(&cache, SystemTime::now());
+    });
     remotes
 }
 
@@ -304,13 +620,37 @@ pub(crate) fn test_remotes() -> Arc<Remotes> {
     })
 }
 
+/// A hub for tests with these phones, its download cache in `cache_dir`.
+#[cfg(test)]
+pub(crate) fn test_remotes_with(
+    portable: Arc<dyn arke_remote::mtp::Portable>,
+    cache_dir: PathBuf,
+) -> Arc<Remotes> {
+    Remotes::new(arke_remote::RemotesConfig {
+        known_hosts: None,
+        cache_dir,
+        secrets: Arc::new(arke_remote::creds::NoSecrets),
+        transport: Arc::new(NoHttp),
+        portable,
+    })
+}
+
 /// The Windows shell plus remote locations (see the module docs).
 pub(crate) struct RemoteShell {
     inner: Arc<dyn Shell>,
     remotes: Arc<Remotes>,
-    /// Remote items last cut to the clipboard (clipboard sequence number, originals): pasting
-    /// them inside Arke moves the originals, not the staged copies.
-    cut: Mutex<Option<(u32, Vec<PathBuf>)>>,
+    /// Remote items last copied or cut to the clipboard.
+    clip: Mutex<Option<ClipRecord>>,
+}
+
+/// Remote items Arke put on the clipboard: pasted inside Arke, the originals are copied or moved
+/// straight from the server (with progress), whatever other programs are given.
+#[derive(Clone)]
+struct ClipRecord {
+    /// The clipboard sequence number right after.
+    seq: u32,
+    paths: Vec<PathBuf>,
+    cut: bool,
 }
 
 impl RemoteShell {
@@ -318,8 +658,40 @@ impl RemoteShell {
         Self {
             inner,
             remotes,
-            cut: Mutex::new(None),
+            clip: Mutex::new(None),
         }
+    }
+
+    /// Remote items on the clipboard as virtual files, nothing downloaded (#529). `None` if they
+    /// can't be (some are local, or the system refused): then they are staged.
+    fn set_virtual(&self, files: &ClipboardFiles) -> Result<Option<u32>, ShellError> {
+        if !files.paths.iter().all(|p| remote(p).is_some()) {
+            return Ok(None);
+        }
+        let items = RemoteItems::new(Arc::clone(&self.remotes), files.paths.clone(), files.cut);
+        match self.inner.set_clipboard_remote(&items) {
+            Ok(seq) => Ok(Some(seq)),
+            // Staging would only download to find the clipboard still busy.
+            Err(ShellError::ClipboardBusy) => Err(ShellError::ClipboardBusy),
+            Err(err) => {
+                log::warn!("remote items not on the clipboard as virtual files: {err}");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Local copies on the clipboard, downloaded first (up to [`STAGE_MAX`]): what other
+    /// programs get when the items can't go there as virtual files.
+    fn set_staged(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
+        let staged = match stage_local_copies(&self.remotes, &files.paths, STAGE_MAX) {
+            Ok(staged) => staged,
+            Err(RemoteError::TooLarge) => return Err(ShellError::RemoteClipTooLarge),
+            Err(err) => return Err(err.into()),
+        };
+        self.inner.set_clipboard_files(&ClipboardFiles {
+            paths: staged,
+            cut: false,
+        })
     }
 
     fn touches_remote(op: &FileOp) -> bool {
@@ -438,10 +810,11 @@ impl RemoteShell {
                     // Between servers (or a copy on one server: SFTP has no server-side copy):
                     // through a local staging folder.
                     let stage = stage_dir(remotes)?;
+                    let cleanup = StageGuard(Some(stage.clone()));
                     let local = stage.join(arke_remote::hub::local_name(&entry.name));
                     let result = download_tree(remotes, &from, &entry, &local, sink)
                         .and_then(|()| upload_tree(remotes, &local, &target, sink));
-                    let _ = std::fs::remove_dir_all(&stage);
+                    drop(cleanup);
                     result?;
                     if is_move {
                         remotes.delete(&from, sink)?;
@@ -603,11 +976,19 @@ impl Shell for RemoteShell {
         image: Option<&DragImage>,
         after_lost_press: bool,
     ) -> Result<DragOutEnd, ShellError> {
-        // Remote drags hand over staged local copies (see explorer_dnd), never URLs.
+        // Remote drags hand over virtual files (`drag_out_remote`), never URLs.
         if paths.iter().any(|p| remote(p).is_some()) {
             return Ok(DragOutEnd::Finished);
         }
         self.inner.drag_out(paths, image, after_lost_press)
+    }
+    fn drag_out_remote(
+        &self,
+        items: &Arc<RemoteItems>,
+        image: Option<&DragImage>,
+        after_lost_press: bool,
+    ) -> Result<DragOutEnd, ShellError> {
+        self.inner.drag_out_remote(items, image, after_lost_press)
     }
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         self.inner.covered_at_cursor(owner)
@@ -656,27 +1037,41 @@ impl Shell for RemoteShell {
     }
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
         if !files.paths.iter().any(|p| remote(p).is_some()) {
-            *self.cut.lock() = None;
+            *self.clip.lock() = None;
             return self.inner.set_clipboard_files(files);
         }
-        // Other programs get local copies; a cut stays a move of the originals inside Arke.
-        let staged = stage_local_copies(&self.remotes, &files.paths, STAGE_MAX)?;
-        let seq = self.inner.set_clipboard_files(&ClipboardFiles {
-            paths: staged,
-            cut: false,
-        })?;
-        *self.cut.lock() = files.cut.then(|| (seq, files.paths.clone()));
+        // Other programs get virtual files, read from the server as they paste, or else local
+        // copies; inside Arke, a paste transfers the originals.
+        let seq = match self.set_virtual(files)? {
+            Some(seq) => seq,
+            None => self.set_staged(files)?,
+        };
+        *self.clip.lock() = Some(ClipRecord {
+            seq,
+            paths: files.paths.clone(),
+            cut: files.cut,
+        });
         Ok(seq)
     }
     fn clipboard_files(&self) -> Result<Option<(ClipboardFiles, u32)>, ShellError> {
-        let found = self.inner.clipboard_files()?;
-        let cut = self.cut.lock().clone();
-        Ok(match (found, cut) {
-            (Some((_, seq)), Some((cut_seq, paths))) if seq == cut_seq => {
-                Some((ClipboardFiles { paths, cut: true }, seq))
-            }
-            (found, _) => found,
-        })
+        let record = self.clip.lock().clone();
+        if let Some(record) = record
+            && (self.inner.clipboard_seq() == record.seq
+                || self.inner.clipboard_is_remote(record.seq))
+        {
+            let files = ClipboardFiles {
+                paths: record.paths,
+                cut: record.cut,
+            };
+            return Ok(Some((files, record.seq)));
+        }
+        self.inner.clipboard_files()
+    }
+    fn set_clipboard_remote(&self, items: &Arc<RemoteItems>) -> Result<u32, ShellError> {
+        self.inner.set_clipboard_remote(items)
+    }
+    fn clipboard_is_remote(&self, seq: u32) -> bool {
+        self.inner.clipboard_is_remote(seq)
     }
     fn clipboard_virtual_files(
         &self,
@@ -1025,6 +1420,188 @@ pub(crate) fn refresh_phones(remotes: Arc<Remotes>, cx: &mut gpui::App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arke_remote::testing_mtp::{FakeDevices, Node};
+
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    /// A phone with two photos in `DCIM`, and the guard of the hub's download cache.
+    fn phone() -> (Arc<FakeDevices>, Arc<Remotes>, tempfile::TempDir) {
+        let devices = Arc::new(FakeDevices::default());
+        devices.plug(
+            "phone",
+            "Phone",
+            Node::folder([(
+                "Internal",
+                Node::folder([(
+                    "DCIM",
+                    Node::folder([
+                        ("a.jpg", Node::file(b"jpeg bytes")),
+                        ("b.jpg", Node::file(b"more jpeg bytes")),
+                    ]),
+                )]),
+            )]),
+        );
+        let cache = tempfile::Builder::new()
+            .prefix("arke-stage-test-")
+            .tempdir()
+            .unwrap();
+        let remotes = test_remotes_with(
+            Arc::clone(&devices) as Arc<dyn arke_remote::mtp::Portable>,
+            cache.path().to_path_buf(),
+        );
+        (devices, remotes, cache)
+    }
+
+    fn entries(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, Iterator::count)
+    }
+
+    /// A staging that fails partway, or goes over the limit, deletes its folder again (#529).
+    #[test]
+    fn a_staging_that_fails_leaves_no_folder_behind() {
+        let (_devices, remotes, _cache) = phone();
+        let staged = remotes.cache_dir().join("staged");
+        let dcim = PathBuf::from("mtp://phone/Internal/DCIM");
+        let photo = dcim.join("a.jpg");
+        // The first item is downloaded, then the second isn't there.
+        let failed = stage_local_copies(&remotes, &[photo.clone(), dcim.join("gone.jpg")], 1 << 20);
+        assert!(matches!(failed, Err(RemoteError::NotFound)), "{failed:?}");
+        assert_eq!(entries(&staged), 0, "the partial staging was removed");
+        // A folder is only found too large once its files are downloaded.
+        let too_large = stage_local_copies(&remotes, std::slice::from_ref(&dcim), 12);
+        assert!(matches!(too_large, Err(RemoteError::TooLarge)), "{too_large:?}");
+        assert_eq!(entries(&staged), 0, "the staging over the limit was removed");
+        // One that works keeps its copies.
+        let copies = stage_local_copies(&remotes, &[photo], 1 << 20).unwrap();
+        assert_eq!(std::fs::read(&copies[0]).unwrap(), b"jpeg bytes");
+        assert_eq!(entries(&staged), 1);
+    }
+
+    /// Remote items are listed for other programs as each item and everything under a folder,
+    /// folders first, with free Windows names and the files' sizes; only items read in full
+    /// (all under them) count as moved out (#529).
+    #[test]
+    fn remote_items_are_listed_with_relative_names_folders_and_sizes() {
+        let (_devices, remotes, _cache) = phone();
+        let dcim = PathBuf::from("mtp://phone/Internal/DCIM");
+        let listing = list_virtual(&remotes, &[dcim.clone(), dcim.join("a.jpg")]).unwrap();
+        let listed: Vec<(&str, bool, Option<u64>)> = listing
+            .items
+            .iter()
+            .map(|i| (i.rel.as_str(), i.is_dir(), i.size))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("DCIM", true, None),
+                (r"DCIM\a.jpg", false, Some(10)),
+                (r"DCIM\b.jpg", false, Some(15)),
+                ("a.jpg", false, Some(10)),
+            ]
+        );
+        assert_eq!(
+            listing.items[1].url,
+            RemoteUrl::from_path(&dcim.join("a.jpg"))
+        );
+        assert_eq!(listing.tops.len(), 2);
+        assert_eq!(listing.tops[0].range, 0..3);
+        assert!(listing.tops.iter().all(|top| top.whole));
+
+        assert!(listing.fully_read().is_empty());
+        listing.mark_read(1);
+        listing.mark_read(3);
+        assert_eq!(
+            listing.fully_read(),
+            [listing.tops[1].url.clone()],
+            "the folder isn't read in full yet"
+        );
+        listing.mark_read(2);
+        assert_eq!(listing.fully_read().len(), 2);
+
+        // The same name twice gets a free one, as a paste would.
+        let twice = list_virtual(&remotes, &[dcim.clone(), dcim]).unwrap();
+        let tops: Vec<&str> = twice
+            .tops
+            .iter()
+            .map(|top| twice.items[top.range.start].rel.as_str())
+            .collect();
+        assert_eq!(tops, ["DCIM", "DCIM (2)"]);
+    }
+
+    /// Sets all of a file's times to `when`.
+    fn age(path: &Path, when: SystemTime) {
+        use std::os::windows::fs::FileTimesExt as _;
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_accessed(when)
+            .set_modified(when)
+            .set_created(when);
+        file.set_times(times).unwrap();
+    }
+
+    /// At start, old staging folders and old downloads go; recent ones, a download open in a
+    /// program and folders Arke doesn't make stay (#529).
+    #[test]
+    fn old_copies_are_pruned_and_recent_or_open_ones_kept() {
+        let dir = tempfile::Builder::new()
+            .prefix("arke-prune-test-")
+            .tempdir()
+            .unwrap();
+        let root = dir.path();
+        let now = SystemTime::now();
+        let since = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        let old_stage = root
+            .join("staged")
+            .join(format!("{}-0", since(now - 2 * DAY).as_millis()));
+        let new_stage = root
+            .join("staged")
+            .join(format!("{}-1", since(now).as_millis()));
+        for stage in [&old_stage, &new_stage] {
+            std::fs::create_dir_all(stage.join("DCIM")).unwrap();
+            std::fs::write(stage.join("DCIM").join("a.jpg"), b"x").unwrap();
+        }
+        let fetched = root.join("0123456789abcdef");
+        std::fs::create_dir_all(&fetched).unwrap();
+        let (old, open, fresh) = (
+            fetched.join("old.jpg"),
+            fetched.join("open.jpg"),
+            fetched.join("fresh.jpg"),
+        );
+        let other = root.join("not-ours");
+        std::fs::create_dir_all(&other).unwrap();
+        let foreign = other.join("keep.txt");
+        for file in [&old, &open, &fresh, &foreign] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        for file in [&old, &open, &foreign] {
+            age(file, now - 2 * DAY);
+        }
+        let held = std::fs::File::open(&open).unwrap();
+
+        prune_cache(root, now);
+        assert!(!old_stage.exists(), "an old staging folder goes");
+        assert!(new_stage.join("DCIM").join("a.jpg").exists());
+        assert!(!old.exists(), "an old download goes");
+        assert!(open.exists(), "a download open in a program stays");
+        assert!(fresh.exists());
+        assert!(foreign.exists(), "folders Arke doesn't make are left alone");
+
+        drop(held);
+        prune_cache(root, now + 2 * DAY);
+        assert!(!fetched.exists(), "an old folder left empty goes too");
+        assert!(!new_stage.exists());
+        assert!(foreign.exists());
+    }
+
+    #[test]
+    fn staging_folders_are_dated_by_their_names() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_millis(1_767_323_045_123);
+        assert_eq!(staged_time("1767323045123-4"), Some(t));
+        assert_eq!(staged_time("photos"), None);
+        assert!(is_fetch_folder("0123456789abcdef"));
+        assert!(!is_fetch_folder("staged"));
+        assert!(!is_stale(None, SystemTime::now()), "an unknown time is never old");
+    }
 
     /// A connected phone shows under This PC, opening its `mtp://` location (#292).
     #[test]

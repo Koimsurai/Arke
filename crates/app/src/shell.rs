@@ -72,6 +72,10 @@ pub(crate) enum ShellError {
     /// There are no files to put on (or read from) the clipboard.
     #[error("{}", t!("clip.empty"))]
     ClipboardEmpty,
+    /// Remote items that couldn't go on the clipboard as virtual files are too large to download
+    /// for it.
+    #[error("{}", t!("clip.remote_too_large"))]
+    RemoteClipTooLarge,
     /// Clipboard memory could not be locked.
     #[error("{}", t!("clip.lock_failed"))]
     ClipboardLock,
@@ -985,6 +989,34 @@ pub(crate) trait Shell: Send + Sync + 'static {
         &self,
     ) -> Result<Option<crate::win_virtual_drop::VirtualDrop>, ShellError> {
         Ok(None)
+    }
+    /// Puts remote items on the clipboard as virtual files (#529): other programs read their
+    /// bytes from the server as they paste. Returns the clipboard sequence number. Downloads and
+    /// lists nothing. Background thread.
+    fn set_clipboard_remote(
+        &self,
+        items: &Arc<crate::remote_shell::RemoteItems>,
+    ) -> Result<u32, ShellError> {
+        let _ = items;
+        Err(ShellError::Unsupported)
+    }
+    /// Whether the remote items [`Shell::set_clipboard_remote`] put there with sequence number
+    /// `seq` are still on the clipboard (programs reading a format can move the number on).
+    /// Does not open the clipboard or block; UI thread safe.
+    fn clipboard_is_remote(&self, seq: u32) -> bool {
+        let _ = seq;
+        false
+    }
+    /// Drags remote items into another program as virtual files, offering copy only; like
+    /// [`Shell::drag_out`]. Their listing must be made already. UI thread.
+    fn drag_out_remote(
+        &self,
+        items: &Arc<crate::remote_shell::RemoteItems>,
+        image: Option<&DragImage>,
+        after_lost_press: bool,
+    ) -> Result<DragOutEnd, ShellError> {
+        let _ = (items, image, after_lost_press);
+        Ok(DragOutEnd::Finished)
     }
     /// Clears the clipboard after a cut and paste, only if the sequence is still `seq` so later copies survive. Background thread.
     fn clear_clipboard_if(&self, seq: u32);

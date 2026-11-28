@@ -5,6 +5,7 @@
 use super::*;
 use crate::net_dialog::{NetDialogKind, Protocol};
 use crate::settings::SettingsStore;
+use arke_remote::mtp::Portable;
 use arke_remote::testing::{PASSWORD, USER, serve_sftp};
 use std::sync::Arc;
 
@@ -322,4 +323,148 @@ fn a_url_in_the_server_field_shows_its_port_and_path(cx: &mut TestAppContext) {
         .update(cx, |d, cx| d.remote_url_for_test(cx))
         .unwrap();
     assert_eq!((url.port, url.path.as_str()), (8443, "/mine"));
+}
+
+/// A fake phone whose reads are counted.
+struct CountingPhone {
+    devices: arke_remote::testing_mtp::FakeDevices,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Portable for CountingPhone {
+    fn devices(&self) -> arke_remote::RemoteResult<Vec<arke_remote::mtp::Device>> {
+        self.devices.devices()
+    }
+    fn list(
+        &self,
+        device: &str,
+        path: &str,
+    ) -> arke_remote::RemoteResult<Vec<arke_remote::mtp::Object>> {
+        self.devices.list(device, path)
+    }
+    fn stat(
+        &self,
+        device: &str,
+        path: &str,
+    ) -> arke_remote::RemoteResult<arke_remote::mtp::Object> {
+        self.devices.stat(device, path)
+    }
+    fn read(
+        &self,
+        device: &str,
+        path: &str,
+        out: &mut dyn std::io::Write,
+        max: u64,
+        sink: &dyn arke_remote::TransferSink,
+    ) -> arke_remote::RemoteResult<u64> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.devices.read(device, path, out, max, sink)
+    }
+}
+
+/// Copying a phone's folder puts it on the clipboard (as virtual files, for other programs)
+/// without reading a byte from the phone or staging anything (#529); pasting it in Arke copies
+/// the originals straight from the phone, with progress in bytes.
+#[test]
+fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() {
+    use arke_remote::testing_mtp::Node;
+    let devices = arke_remote::testing_mtp::FakeDevices::default();
+    devices.plug(
+        "phone",
+        "Phone",
+        Node::folder([(
+            "Internal",
+            Node::folder([(
+                "DCIM",
+                Node::folder([
+                    ("a.jpg", Node::file(b"jpeg bytes")),
+                    (
+                        "Camera",
+                        Node::folder([("c.jpg", Node::file(b"camera bytes"))]),
+                    ),
+                ]),
+            )]),
+        )]),
+    );
+    let phone = Arc::new(CountingPhone {
+        devices,
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let (cache, _cache) = temp_dir("cache");
+    let (dest, _dest) = temp_dir("paste");
+    let remotes = crate::remote_shell::test_remotes_with(
+        Arc::clone(&phone) as Arc<dyn Portable>,
+        cache.clone(),
+    );
+    let local = Arc::new(FakeShell::default());
+    let shell = crate::remote_shell::RemoteShell::new(
+        Arc::clone(&local) as Arc<dyn Shell>,
+        remotes,
+    );
+    let dcim = PathBuf::from("mtp://phone/Internal/DCIM");
+
+    let seq = shell
+        .set_clipboard_files(&ClipboardFiles {
+            paths: vec![dcim.clone()],
+            cut: false,
+        })
+        .unwrap();
+    assert_eq!(phone.reads.load(Ordering::Relaxed), 0, "nothing was downloaded");
+    assert!(!cache.join("staged").exists(), "nothing was staged");
+    assert!(local.clipboard.lock().is_none(), "no local copies on the clipboard");
+    let (items, _) = local.remote_clipboard.lock().clone().unwrap();
+    assert_eq!(items.sources, [dcim.clone()]);
+    assert!(!items.cut);
+    assert!(items.listed().is_none(), "nor listed, until a program asks");
+    assert!(shell.clipboard_has_files());
+
+    // Paste, as `paste_files` does it: what is on the clipboard, then a tracked copy into the
+    // folder (the job the progress center draws).
+    let (files, got) = shell.clipboard_files().unwrap().unwrap();
+    assert_eq!(got, seq);
+    assert_eq!(files.paths, [dcim.clone()]);
+    assert!(!files.cut);
+    let progress = Arc::new(crate::shell::OpProgress::default());
+    let op = FileOp::Copy {
+        sources: files.paths,
+        dest: dest.clone(),
+    };
+    let (result, undo) = shell.file_op_tracked(&op, None, &progress);
+    assert!(matches!(result, Ok(OpOutcome::Done)), "{result:?}");
+    assert!(undo.is_none());
+    assert_eq!(
+        std::fs::read(dest.join(r"DCIM\a.jpg")).unwrap(),
+        b"jpeg bytes"
+    );
+    assert_eq!(
+        std::fs::read(dest.join(r"DCIM\Camera\c.jpg")).unwrap(),
+        b"camera bytes"
+    );
+    assert_eq!(phone.reads.load(Ordering::Relaxed), 2, "each file read once");
+    assert!(progress.work_in_bytes.load(Ordering::Relaxed));
+    assert_eq!(progress.bytes_total.load(Ordering::Relaxed), 22);
+    assert_eq!(progress.bytes.load(Ordering::Relaxed), 22);
+
+    // A cut is pasted as a move of the originals.
+    shell
+        .set_clipboard_files(&ClipboardFiles {
+            paths: vec![dcim.join("a.jpg")],
+            cut: true,
+        })
+        .unwrap();
+    let (files, _) = shell.clipboard_files().unwrap().unwrap();
+    assert_eq!(files.paths, [dcim.join("a.jpg")]);
+    assert!(files.cut);
+    assert_eq!(phone.reads.load(Ordering::Relaxed), 2);
+
+    // Something else copied: that is what a paste takes.
+    let other = PathBuf::from(r"C:\o\a.txt");
+    shell
+        .set_clipboard_files(&ClipboardFiles {
+            paths: vec![other.clone()],
+            cut: false,
+        })
+        .unwrap();
+    let (files, _) = shell.clipboard_files().unwrap().unwrap();
+    assert_eq!(files.paths, [other]);
 }

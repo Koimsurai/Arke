@@ -44,6 +44,12 @@ use windows::core::{HRESULT, PCWSTR, w};
 use crate::shell::{ClipboardFiles, FileOp, ItemFailure, OpOutcome, PutBack, ShellError, Undo};
 
 mod lazy_clipboard;
+mod remote_clip;
+
+pub(crate) use remote_clip::{
+    clipboard_is as clipboard_is_remote, drag_out as drag_out_remote,
+    set_clipboard as set_clipboard_remote,
+};
 
 /// Cancel pressed in a copy engine dialog.
 const COPYENGINE_E_USER_CANCELLED: HRESULT = HRESULT(0x8027_0000_u32.cast_signed());
@@ -1348,42 +1354,53 @@ pub(crate) fn drag_out(
     after_lost_press: bool,
 ) -> Result<Option<DragOutcome>, ShellError> {
     use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
-    use windows::Win32::UI::Shell::SHDoDragDrop;
 
     if paths.is_empty() {
         return Ok(None);
     }
-    // SAFETY: SHDoDragDrop runs on the UI thread, which is OLE-initialized.
-    unsafe {
-        let data = drag_data_object(paths)?;
-        add_hdrop(&data, paths)?;
-        if let Some(image) = image {
-            crate::win_dragimage::attach(&data, image);
-        }
-        // Custom drop source: cancel when the cursor returns to the Arke window so Arke's
-        // internal drag can take over.
-        let home = drag_home();
-        let source = drag_source::ReturnAware::new(home, after_lost_press);
-        let returned = Rc::clone(&source.returned);
-        let source: windows::Win32::System::Ole::IDropSource = source.into();
-        let _modal = gpui_windows::begin_modal_drag();
-        let effect = SHDoDragDrop(
-            None,
-            &data,
-            &source,
-            DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK,
-        )?;
-        if returned.get() {
-            return Ok(Some(DragOutcome::Returned));
-        }
-        Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
-            Some(DragOutcome::Moved)
-        } else if effect.0 & (DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0) != 0 {
-            Some(DragOutcome::Copied)
-        } else {
-            None
-        })
+    let data = drag_data_object(paths)?;
+    add_hdrop(&data, paths)?;
+    drag_object_out(
+        &data,
+        image,
+        after_lost_press,
+        DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK,
+    )
+}
+
+/// Runs Windows' drag loop for `data`, offering `effects` to the drop target (see
+/// [`drag_out`]). UI thread.
+fn drag_object_out(
+    data: &windows::Win32::System::Com::IDataObject,
+    image: Option<&crate::shell::DragImage>,
+    after_lost_press: bool,
+    effects: windows::Win32::System::Ole::DROPEFFECT,
+) -> Result<Option<DragOutcome>, ShellError> {
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::UI::Shell::SHDoDragDrop;
+
+    if let Some(image) = image {
+        crate::win_dragimage::attach(data, image);
     }
+    // Custom drop source: cancel when the cursor returns to the Arke window so Arke's
+    // internal drag can take over.
+    let home = drag_home();
+    let source = drag_source::ReturnAware::new(home, after_lost_press);
+    let returned = Rc::clone(&source.returned);
+    let source: windows::Win32::System::Ole::IDropSource = source.into();
+    let _modal = gpui_windows::begin_modal_drag();
+    // SAFETY: SHDoDragDrop runs on the UI thread, which is OLE-initialized.
+    let effect = unsafe { SHDoDragDrop(None, data, &source, effects) }?;
+    if returned.get() {
+        return Ok(Some(DragOutcome::Returned));
+    }
+    Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
+        Some(DragOutcome::Moved)
+    } else if effect.0 & (DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0) != 0 {
+        Some(DragOutcome::Copied)
+    } else {
+        None
+    })
 }
 
 /// The Arke window the drag started in: the one holding the mouse since the press. A press on a
@@ -1989,8 +2006,10 @@ pub(crate) fn set_clipboard_files(files: &ClipboardFiles) -> Result<u32, ShellEr
 
 /// Before Arke exits: renders the clipboard formats no program has asked for yet, so the files
 /// stay pasteable in full after Arke is gone. Does nothing if Arke put no files on the clipboard.
+/// Remote items (virtual files) can't be read without Arke, so they are taken off instead.
 pub(crate) fn render_clipboard_on_quit() {
     lazy_clipboard::render_all_now();
+    remote_clip::clear_on_quit();
 }
 
 pub(crate) fn set_clipboard_text(text: &str) -> Result<(), ShellError> {

@@ -6086,6 +6086,14 @@ clip.empty:
   es: No hay archivos en el Portapapeles
   pt-BR: Não há arquivos na área de transferência
   ja: クリップボードにファイルがありません
+clip.remote_too_large:
+  en: More than 512 MB can't be downloaded for the clipboard. Drag the items into a folder in Arke instead
+  zh-TW: 超過 512 MB 無法下載到剪貼簿，請改成把項目拖曳到 Arke 裡的資料夾
+  zh-CN: 超过 512 MB 无法下载到剪贴板，请改为把项目拖动到 Arke 中的文件夹
+  de: Mehr als 512 MB können nicht für die Zwischenablage heruntergeladen werden. Ziehen Sie die Elemente stattdessen in einen Ordner in Arke
+  es: No se pueden descargar más de 512 MB para el Portapapeles. Arrastre los elementos a una carpeta de Arke
+  pt-BR: Não é possível baixar mais de 512 MB para a área de transferência. Arraste os itens para uma pasta no Arke
+  ja: 512 MB を超えるとクリップボード用にダウンロードできません。項目を Arke のフォルダーにドラッグしてください
 clip.busy:
   en: The clipboard is being used by another program
   zh-TW: 剪貼簿正被其他程式使用

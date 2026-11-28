@@ -1092,6 +1092,30 @@ impl Shell for WinShell {
         crate::win_virtual_drop::clipboard_virtual_files()
     }
 
+    fn set_clipboard_remote(
+        &self,
+        items: &Arc<crate::remote_shell::RemoteItems>,
+    ) -> Result<u32, ShellError> {
+        debug_assert!(!arke_core::fs::is_ui_thread());
+        win_fileops::set_clipboard_remote(items)
+    }
+
+    fn clipboard_is_remote(&self, seq: u32) -> bool {
+        win_fileops::clipboard_is_remote(seq)
+    }
+
+    fn drag_out_remote(
+        &self,
+        items: &Arc<crate::remote_shell::RemoteItems>,
+        image: Option<&crate::shell::DragImage>,
+        after_lost_press: bool,
+    ) -> Result<crate::shell::DragOutEnd, ShellError> {
+        win_fileops::drag_out_remote(items, image, after_lost_press).map(|outcome| match outcome {
+            Some(win_fileops::DragOutcome::Returned) => crate::shell::DragOutEnd::Returned,
+            _ => crate::shell::DragOutEnd::Finished,
+        })
+    }
+
     fn clear_clipboard_if(&self, seq: u32) {
         debug_assert!(!arke_core::fs::is_ui_thread());
         win_fileops::clear_clipboard_if(seq);

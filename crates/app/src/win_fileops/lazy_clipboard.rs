@@ -267,6 +267,8 @@ enum Request {
     },
     /// Render every promised format that was not asked for yet.
     RenderAll { reply: flume::Sender<()> },
+    /// Run this here: remote items' data object lives on this thread (`remote_clip`).
+    Run(Box<dyn FnOnce() + Send>),
 }
 
 /// The owner thread, as the other threads see it.
@@ -414,6 +416,7 @@ fn drain(hwnd: HWND) {
                 render_pending(hwnd);
                 let _ = reply.send(());
             }
+            Request::Run(job) => job(),
         }
     }
 }
@@ -555,6 +558,30 @@ pub(super) fn set(files: &ClipboardFiles) -> Result<u32, ShellError> {
         log::info!("clipboard owner did not answer: {err}");
         ShellError::ClipboardBusy
     })?
+}
+
+/// Runs `job` on the owner thread, which pumps messages for the life of the process, and waits
+/// for its answer, `wait` at most. `start`: start the thread if it isn't running yet (else this
+/// fails). Background thread.
+pub(super) fn on_owner<T: Send + 'static>(
+    start: bool,
+    wait: Duration,
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ShellError> {
+    let owner = if start {
+        owner()
+    } else {
+        OWNER.get().and_then(Option::as_ref)
+    }
+    .ok_or(ShellError::ClipboardBusy)?;
+    let (reply, answer) = flume::bounded(1);
+    owner.send(Request::Run(Box::new(move || {
+        let _ = reply.send(job());
+    })))?;
+    answer.recv_timeout(wait).map_err(|err| {
+        log::info!("clipboard owner did not answer: {err}");
+        ShellError::ClipboardBusy
+    })
 }
 
 /// Before Arke exits: renders what no program asked for yet, so every format outlives the process.

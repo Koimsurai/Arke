@@ -7428,6 +7428,14 @@ preview.md_link_tip:
   es: "%{url}\nCtrl+clic para abrir"
   pt-BR: "%{url}\nCtrl+clique para abrir"
   ja: "%{url}\nCtrl+クリックで開く"
+preview.md_image:
+  en: "[image]"
+  zh-TW: "[圖片]"
+  zh-CN: "[图片]"
+  de: "[Bild]"
+  es: "[imagen]"
+  pt-BR: "[imagem]"
+  ja: "[画像]"
 preview.in_last_column:
   en: Previewed in the last column
   zh-TW: "預覽顯示在最後一欄"

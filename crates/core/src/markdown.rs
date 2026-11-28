@@ -2,6 +2,7 @@
 //! pulldown-cmark into a small block tree that the app lays out. Pure computation; the preview
 //! loader runs it off the UI thread.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -136,6 +137,23 @@ impl Inline {
         }
     }
 
+    /// Drops white space at the end, keeping the runs in step with the text.
+    fn trim_end(&mut self) {
+        let mut excess = self.text.len() - self.text.trim_end().len();
+        self.text.truncate(self.text.len() - excess);
+        while excess > 0 {
+            let Some(last) = self.runs.last_mut() else {
+                break;
+            };
+            if last.len > excess {
+                last.len -= excess;
+                break;
+            }
+            excess -= last.len;
+            self.runs.pop();
+        }
+    }
+
     /// Whether there is nothing but white space.
     #[must_use]
     pub fn is_blank(&self) -> bool {
@@ -143,12 +161,25 @@ impl Inline {
     }
 }
 
+/// What an image without a description shows, when the caller has no localized text.
+const DEFAULT_IMAGE_PLACEHOLDER: &str = "[image]";
+
 /// Parses `text`.
 #[must_use]
 pub fn parse(text: &str) -> Doc {
+    parse_with(text, DEFAULT_IMAGE_PLACEHOLDER)
+}
+
+/// Parses `text`; an image with no description (`![](x.png)`, `<img src=x>`) shows
+/// `image_placeholder`.
+#[must_use]
+pub fn parse_with(text: &str, image_placeholder: &str) -> Doc {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
-    let mut builder = Builder::default();
+    let mut builder = Builder {
+        placeholder: image_placeholder.to_owned(),
+        ..Builder::default()
+    };
     builder.stack.push(Container::Doc(Vec::new()));
     for event in Parser::new_ext(text, options) {
         builder.event(event);
@@ -193,6 +224,14 @@ struct Builder {
     strike: usize,
     image: usize,
     link: Vec<usize>,
+    /// Shown for an image without a description.
+    placeholder: String,
+    /// Text length where each open Markdown image began, to tell whether it had a description.
+    image_starts: Vec<usize>,
+    /// Open HTML `<a>` tags: whether each one started a link.
+    html_links: Vec<bool>,
+    /// The start of an HTML tag cut off by the end of its line, finished by the next HTML event.
+    html_tail: String,
 }
 
 impl Builder {
@@ -237,6 +276,8 @@ impl Builder {
             && let Some((_, text)) = self.inline.take()
             && !text.is_blank()
         {
+            let mut text = text;
+            text.trim_end();
             self.push_block(Block::Paragraph(text));
         }
     }
@@ -257,10 +298,7 @@ impl Builder {
                 };
                 self.text(&text, style);
             }
-            Event::Html(text) | Event::InlineHtml(text) => {
-                let style = self.style();
-                self.text(text.trim_end_matches(['\r', '\n']), style);
-            }
+            Event::Html(text) | Event::InlineHtml(text) => self.html(&text),
             Event::SoftBreak => {
                 let style = self.style();
                 self.text(" ", style);
@@ -339,7 +377,11 @@ impl Builder {
                 let ix = inline.links.len() - 1;
                 self.link.push(ix);
             }
-            Tag::Image { .. } => self.image += 1,
+            Tag::Image { .. } => {
+                let start = self.inline().text.len();
+                self.image_starts.push(start);
+                self.image += 1;
+            }
             _ => {}
         }
     }
@@ -419,8 +461,131 @@ impl Builder {
             TagEnd::Link => {
                 self.link.pop();
             }
-            TagEnd::Image => self.image = self.image.saturating_sub(1),
+            TagEnd::Image => {
+                // No description: show the placeholder so the image doesn't vanish.
+                if let Some(start) = self.image_starts.pop()
+                    && self.inline().text.len() == start
+                {
+                    self.placeholder_image();
+                }
+                self.image = self.image.saturating_sub(1);
+            }
             _ => {}
+        }
+    }
+
+    /// Shows the image placeholder.
+    fn placeholder_image(&mut self) {
+        let style = Style {
+            image: true,
+            ..self.style()
+        };
+        let placeholder = std::mem::take(&mut self.placeholder);
+        self.text(&placeholder, style);
+        self.placeholder = placeholder;
+    }
+
+    /// Raw HTML: images show their description, `<br>` breaks the line, `<a href>` is a link, and
+    /// every other tag and comment is dropped, keeping the text between them. One linear pass.
+    fn html(&mut self, raw: &str) {
+        let joined;
+        let mut rest = if self.html_tail.is_empty() {
+            raw
+        } else {
+            joined = std::mem::take(&mut self.html_tail) + raw;
+            &joined
+        };
+        while let Some(lt) = rest.find('<') {
+            self.html_text(&rest[..lt]);
+            let tag = &rest[lt..];
+            if let Some(comment) = tag.strip_prefix("<!--") {
+                match comment.find("-->") {
+                    Some(end) => rest = &comment[end + 3..],
+                    None => return,
+                }
+                continue;
+            }
+            let starts_tag = tag[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/')
+                || tag[1..].starts_with(['!', '?']);
+            if !starts_tag {
+                self.html_text("<");
+                rest = &tag[1..];
+                continue;
+            }
+            let Some(end) = tag_end(tag) else {
+                // The tag goes on in the next line.
+                tag.clone_into(&mut self.html_tail);
+                return;
+            };
+            self.html_tag(&tag[1..end]);
+            rest = &tag[end + 1..];
+        }
+        self.html_text(rest);
+    }
+
+    /// Text between HTML tags: white space collapses to single spaces and entities are decoded.
+    fn html_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let style = self.style();
+        let at_gap = |inline: &mut Inline| {
+            inline.text.is_empty() || inline.text.ends_with(char::is_whitespace)
+        };
+        let mut any = false;
+        for word in text.split_whitespace() {
+            if any || (text.starts_with(char::is_whitespace) && !at_gap(self.inline())) {
+                self.text(" ", style);
+            }
+            any = true;
+            self.text(&unescape(word), style);
+        }
+        if (!any || text.ends_with(char::is_whitespace)) && !at_gap(self.inline()) {
+            self.text(" ", style);
+        }
+    }
+
+    /// One HTML tag, without its `<` and `>`.
+    fn html_tag(&mut self, tag: &str) {
+        let (closing, tag) = tag.strip_prefix('/').map_or((false, tag), |t| (true, t));
+        let name_end = tag
+            .find(|c: char| c.is_ascii_whitespace() || c == '/')
+            .unwrap_or(tag.len());
+        let (name, attrs) = tag.split_at(name_end);
+        let is = |want: &str| name.eq_ignore_ascii_case(want);
+        if is("img") && !closing {
+            let alt = attr(attrs, "alt").map(unescape).unwrap_or_default();
+            let alt = alt.trim();
+            if alt.is_empty() {
+                self.placeholder_image();
+            } else {
+                let style = Style {
+                    image: true,
+                    ..self.style()
+                };
+                self.text(alt, style);
+            }
+        } else if is("br") || (is("summary") && closing) {
+            // The summary is a line of its own above the content.
+            let style = self.style();
+            self.text("\n", style);
+        } else if is("a") {
+            if closing {
+                if self.html_links.pop() == Some(true) {
+                    self.link.pop();
+                }
+            } else {
+                let href = attr(attrs, "href")
+                    .map(unescape)
+                    .filter(|href| !href.is_empty());
+                self.html_links.push(href.is_some());
+                if let Some(href) = href {
+                    let inline = self.inline();
+                    inline.links.push(href.into_owned());
+                    let ix = inline.links.len() - 1;
+                    self.link.push(ix);
+                }
+            }
         }
     }
 
@@ -446,6 +611,123 @@ impl Builder {
             _ => Doc::default(),
         }
     }
+}
+
+/// Index of the `>` that ends the tag at the start of `tag` (quoted attribute values may hold one).
+fn tag_end(tag: &str) -> Option<usize> {
+    let mut quote = None;
+    for (i, b) in tag.bytes().enumerate().skip(1) {
+        match (quote, b) {
+            (Some(q), _) if b == q => quote = None,
+            (Some(_), _) => {}
+            (None, b'"' | b'\'') => quote = Some(b),
+            (None, b'>') => return Some(i),
+            (None, _) => {}
+        }
+    }
+    None
+}
+
+/// The value of attribute `want` in the attribute part of a tag: quoted either way or bare, in any
+/// order, name in any case.
+fn attr<'a>(attrs: &'a str, want: &str) -> Option<&'a str> {
+    let b = attrs.as_bytes();
+    let skip_space = |mut i: usize| {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    let mut i = 0;
+    loop {
+        i = skip_space(i);
+        while i < b.len() && b[i] == b'/' {
+            i = skip_space(i + 1);
+        }
+        if i >= b.len() {
+            return None;
+        }
+        let start = i;
+        while i < b.len() && !b[i].is_ascii_whitespace() && !matches!(b[i], b'=' | b'/') {
+            i += 1;
+        }
+        if i == start {
+            // A stray `=`.
+            i += 1;
+            continue;
+        }
+        let name = &attrs[start..i];
+        i = skip_space(i);
+        let mut value = "";
+        if i < b.len() && b[i] == b'=' {
+            i = skip_space(i + 1);
+            let start = i;
+            if i < b.len() && matches!(b[i], b'"' | b'\'') {
+                let quote = b[i];
+                i += 1;
+                let start = i;
+                while i < b.len() && b[i] != quote {
+                    i += 1;
+                }
+                value = &attrs[start..i];
+                i = (i + 1).min(b.len());
+            } else {
+                while i < b.len() && !b[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                value = &attrs[start..i];
+                // `<img src=x/>`: the slash closes the tag.
+                if i == b.len() {
+                    value = value.strip_suffix('/').unwrap_or(value);
+                }
+            }
+        }
+        if name.eq_ignore_ascii_case(want) {
+            return Some(value);
+        }
+    }
+}
+
+/// Decodes the common HTML entities (`&amp;`, `&quot;`, `&#39;`, `&#x27;`, ...); anything else is
+/// left as written. Borrows when there is nothing to decode.
+fn unescape(text: &str) -> Cow<'_, str> {
+    if !text.contains('&') {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let decoded = rest.find(';').filter(|&semi| semi <= 10).and_then(|semi| {
+            let ch = match &rest[1..semi] {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "nbsp" => '\u{a0}',
+                num => {
+                    let num = num.strip_prefix('#')?;
+                    let code = match num.strip_prefix(['x', 'X']) {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                        None => num.parse().ok()?,
+                    };
+                    char::from_u32(code)?
+                }
+            };
+            Some((ch, semi))
+        });
+        if let Some((ch, semi)) = decoded {
+            out.push(ch);
+            rest = &rest[semi + 1..];
+        } else {
+            out.push('&');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
 }
 
 /// File extension [`highlight::lang_for`] knows for a fence's language name (`rust` -> `rs`); other
@@ -577,6 +859,176 @@ mod tests {
             parse("# T\n\ntext\n- item\n")
         );
     }
+
+    /// Every run of the paragraphs, headings and table cells, in order.
+    fn all_runs(doc: &Doc) -> Vec<(String, Style)> {
+        fn inline(out: &mut Vec<(String, Style)>, text: &Inline) {
+            out.extend(styled(text).into_iter().map(|(p, s)| (p.to_owned(), s)));
+        }
+        let mut out = Vec::new();
+        for block in &doc.blocks {
+            match block {
+                Block::Paragraph(t) | Block::Heading { text: t, .. } => inline(&mut out, t),
+                Block::Table { head, rows, .. } => {
+                    for cell in head.iter().chain(rows.iter().flatten()) {
+                        inline(&mut out, cell);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn doc_text(doc: &Doc) -> String {
+        all_runs(doc).into_iter().map(|(t, _)| t).collect()
+    }
+
+    #[test]
+    fn html_image_shows_its_alt_in_the_image_style() {
+        let doc = parse("<div align=\"center\"><img src=\"a.png\" alt=\"Logo\"></div>\n");
+        let runs = all_runs(&doc);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].0, "Logo");
+        assert!(runs[0].1.image);
+        assert!(!doc_text(&doc).contains('<'));
+    }
+
+    #[test]
+    fn html_image_attributes_parse_in_any_form() {
+        for html in [
+            "<p><IMG SRC='a.png' ALT='Shot'/></p>",
+            "<p><img alt=Shot src=a.png></p>",
+            "<p><img src=\"a.png\" width=\"10\" alt = \"Shot\" /></p>",
+            "<p><img\n  src=\"a.png\"\n  alt=\"Shot\"\n></p>",
+        ] {
+            assert_eq!(doc_text(&parse(html)), "Shot", "{html}");
+        }
+        assert_eq!(doc_text(&parse("<p><img alt=\"a &amp; b\"></p>")), "a & b");
+    }
+
+    #[test]
+    fn html_image_in_table_cells_shows_the_alt() {
+        let doc = parse(
+            "| A | B |\n|---|---|\n| <img src=\"x/1.png\" alt=\"Main window\"> | <img src=x/2.png alt=\"Settings\"> |\n",
+        );
+        let Block::Table { rows, .. } = &doc.blocks[0] else {
+            panic!("{:?}", doc.blocks[0]);
+        };
+        assert_eq!(rows[0][0].text, "Main window");
+        assert_eq!(rows[0][1].text, "Settings");
+        assert!(rows[0][0].runs[0].style.image);
+    }
+
+    #[test]
+    fn images_without_a_description_show_the_placeholder() {
+        assert_eq!(doc_text(&parse("<img src=x>")), "[image]");
+        assert_eq!(doc_text(&parse("<img src=x alt=\"\">")), "[image]");
+        assert_eq!(doc_text(&parse("![](x.png)")), "[image]");
+        assert_eq!(doc_text(&parse("a ![](x.png) b")), "a [image] b");
+        assert_eq!(doc_text(&parse_with("![](x.png)", "[Bild]")), "[Bild]");
+        assert!(all_runs(&parse("![](x.png)"))[0].1.image);
+        // A description still wins.
+        assert_eq!(doc_text(&parse("![Logo](x.png)")), "Logo");
+    }
+
+    #[test]
+    fn br_breaks_the_line_and_details_show_summary_and_content() {
+        assert_eq!(doc_text(&parse("one<br>two<br/>three")), "one\ntwo\nthree");
+        let doc = parse("<details>\n<summary>More</summary>\n\nhidden text\n\n</details>\n");
+        let text = doc_text(&doc);
+        assert!(text.contains("More"), "{text:?}");
+        assert!(text.contains("hidden text"), "{text:?}");
+        assert!(!text.contains('<'));
+        assert_eq!(
+            doc_text(&parse("<details><summary>More</summary>text</details>")),
+            "More\ntext"
+        );
+    }
+
+    #[test]
+    fn wrapper_and_unknown_tags_keep_their_text() {
+        let doc = parse(
+            "<p align=\"center\">\n  <b>Bold</b> and <sup>sup</sup> <custom-tag x=\"1\">text</custom-tag>\n</p>\n\n<!-- hidden -->\n\nafter <span>span</span> &amp; <u>u</u>\n",
+        );
+        assert_eq!(doc_text(&doc), "Bold and sup textafter span & u");
+    }
+
+    #[test]
+    fn html_anchor_becomes_a_link() {
+        let doc = parse("see <a href=\"https://x.y\">the site</a> now");
+        let text = paragraph(&doc, 0);
+        assert_eq!(text.text, "see the site now");
+        assert_eq!(text.links, ["https://x.y"]);
+        let runs = styled(text);
+        assert_eq!(runs[1].0, "the site");
+        assert_eq!(runs[1].1.link, Some(0));
+        assert_eq!(runs[2].1.link, None);
+        // No href: just text.
+        assert!(
+            paragraph(&parse("<a name=\"top\">x</a>"), 0)
+                .links
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn code_keeps_html_verbatim() {
+        let doc = parse(
+            "use `<div>` here\n\n```html\n<div align=\"center\"><img src=x></div>\n```\n\n    <p>indented</p>\n",
+        );
+        assert_eq!(paragraph(&doc, 0).text, "use <div> here");
+        assert!(
+            matches!(&doc.blocks[1], Block::Code { text, .. } if text == "<div align=\"center\"><img src=x></div>")
+        );
+        assert!(matches!(&doc.blocks[2], Block::Code { text, .. } if text == "<p>indented</p>"));
+    }
+
+    #[test]
+    fn readme_with_html_shows_no_tag_source() {
+        let text = doc_text(&parse(README_EXCERPT));
+        assert!(!text.contains('<'), "{text:?}");
+        assert!(!text.contains("src="), "{text:?}");
+        for want in [
+            "laPower",
+            "Release",
+            "Main window",
+            "Settings",
+            "[image]",
+            "More",
+        ] {
+            assert!(text.contains(want), "{want}: {text:?}");
+        }
+    }
+
+    /// The HTML shapes of a GitHub README (centered header, badges, a table of screenshots),
+    /// trimmed.
+    const README_EXCERPT: &str = r#"<div align="center">
+
+<img src="docs/icon.png" alt="laPower" width="96" height="96">
+
+# laPower
+
+<p align="center">
+  <a href="https://github.com/x/y/releases"><img src="https://img.shields.io/badge/v1-blue" alt="Release"></a>
+  <img src="https://img.shields.io/badge/license-MIT">
+</p>
+
+<sub>Power tools</sub><br>
+
+</div>
+
+| Main | Settings |
+|---|---|
+| <img src="docs/screenshots/en/main.png" alt="Main window"> | <img src="docs/screenshots/en/settings.png" alt="Settings"> |
+
+<details>
+<summary>More</summary>
+
+Extra text.
+
+</details>
+"#;
 
     #[test]
     fn unclosed_input_keeps_its_text() {

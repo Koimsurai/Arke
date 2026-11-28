@@ -241,6 +241,46 @@ fn a_favorite_dragged_out_and_back_stays(cx: &mut TestAppContext) {
     assert!(shell.ops().is_empty());
 }
 
+/// With the tabs on top, a favorite let go over the tab strip is not dragged off the sidebar: the
+/// strip takes no favorite, so it goes back where it was and nothing says it was removed (#548).
+/// Let go over the file list, it is still removed.
+#[gpui::test]
+fn a_favorite_let_go_over_the_tab_strip_goes_back(cx: &mut TestAppContext) {
+    let (_ws, shell, cx) = window_and_shell(cx);
+    change(cx, |st| {
+        st.tab_layout = crate::settings::TabLayout::Horizontal;
+        st.favorites = Some(vec![p("a"), p("b"), p("c")]);
+    });
+    refresh(cx);
+    let strip = bounds(cx, "tab-strip");
+    let sidebar = bounds(cx, "tile-slot-0");
+    assert!(
+        strip.center().x > sidebar.right(),
+        "the strip is outside the sidebar's columns"
+    );
+    pick_up(cx, sidebar);
+    cx.simulate_mouse_move(strip.center(), Some(MouseButton::Left), Modifiers::none());
+    refresh(cx);
+    assert!(
+        !drawn(cx, "pin-remove-cue"),
+        "over the strip it doesn't show it would go"
+    );
+    cx.simulate_mouse_up(strip.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    refresh(cx);
+    cx.update(|_, cx| assert!(!cx.has_active_drag()));
+    assert_eq!(current(cx).favorites, Some(vec![p("a"), p("b"), p("c")]));
+    assert!(!drawn(cx, "toast-notice-action-0"), "nothing was removed");
+
+    // Over the file list it is removed as before.
+    let first = bounds(cx, "tile-slot-0");
+    pick_up(cx, first);
+    drop_outside(cx);
+    assert_eq!(current(cx).favorites, Some(vec![p("b"), p("c")]));
+    assert!(drawn(cx, "toast-notice-action-0"), "a toast says so");
+    assert!(shell.ops().is_empty());
+}
+
 /// A dragged tile is lifted under the pointer, a little bigger, held where it was taken; its slot
 /// is left empty and moves with it, the other tiles sliding around it (across rows too). Let go,
 /// it keeps that slot and glides in from where its lifted copy was.

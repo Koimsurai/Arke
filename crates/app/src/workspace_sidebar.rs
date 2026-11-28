@@ -651,6 +651,18 @@ fn pin_outside(sidebar: Bounds<Pixels>, at: Point<Pixels>, window: gpui::Size<Pi
     at.x < sidebar.left() || at.x > sidebar.right() || at.y < px(0.) || at.y > window.height
 }
 
+/// Whether letting go of a dragged favorite at `at` removes it: outside the sidebar, but not over
+/// the tab area (`tabs`), which takes no favorite and where the drag ends as dropped nowhere, so
+/// the favorite goes back (#548).
+fn pin_removed(
+    sidebar: Bounds<Pixels>,
+    tabs: Option<Bounds<Pixels>>,
+    at: Point<Pixels>,
+    window: gpui::Size<Pixels>,
+) -> bool {
+    pin_outside(sidebar, at, window) && !tabs.is_some_and(|tabs| tabs.contains(&at))
+}
+
 /// A favorite dragged out of the sidebar and let go: what Undo puts back.
 #[derive(Clone)]
 pub(super) struct RemovedFavorite {
@@ -1977,6 +1989,7 @@ impl Workspace {
             return None;
         }
         let workspace = cx.entity().downgrade();
+        let layout = Rc::clone(&self.tab_layout);
         Some(
             canvas(
                 |_, _, _| (),
@@ -1986,11 +1999,13 @@ impl Workspace {
                     // under the pointer could keep the event to itself.
                     let mover = workspace.clone();
                     let ender = workspace.clone();
+                    let tabs = Rc::clone(&layout);
                     window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                         if phase != DispatchPhase::Capture {
                             return;
                         }
-                        let out = pin_outside(sidebar, e.position, window.viewport_size());
+                        let area = layout.borrow().area();
+                        let out = pin_removed(sidebar, area, e.position, window.viewport_size());
                         let _ = mover.update(cx, |ws, cx| {
                             if ws.tab_drag.set_pin_out(out) {
                                 cx.notify();
@@ -2002,7 +2017,12 @@ impl Workspace {
                         if phase != DispatchPhase::Capture
                             || e.button != MouseButton::Left
                             || crate::press_guard::is_cancel(e)
-                            || !pin_outside(sidebar, e.position, window.viewport_size())
+                            || !pin_removed(
+                                sidebar,
+                                tabs.borrow().area(),
+                                e.position,
+                                window.viewport_size(),
+                            )
                         {
                             return;
                         }

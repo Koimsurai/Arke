@@ -774,7 +774,7 @@ impl Explorer {
         }
         // Whether levels collapse at all is the pane row's call, made with everything else in the
         // row (`Explorer::row_layout`); how many is the slot's.
-        if !self.row_fold.path_collapses {
+        if !self.row_fold.path_collapses() {
             return None;
         }
         let avail = slot - Self::path_chrome();

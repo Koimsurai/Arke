@@ -191,17 +191,60 @@ pub(super) struct RowParts {
     pub(super) info: Info,
 }
 
+/// How far the view tools have given way, in the order they do: each step keeps the ones
+/// before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Tools {
+    /// Everything drawn.
+    All,
+    /// The view switcher gave way to the view options button.
+    ViewButton,
+    /// Sort is in "⋯" too.
+    SortFolded,
+    /// The item count is left out too.
+    CountHidden,
+    /// Synchronized browsing and compare are in "⋯" too.
+    TogglesFolded,
+}
+
+impl Tools {
+    /// Every step, roomiest first.
+    const ALL: [Self; 5] = [
+        Self::All,
+        Self::ViewButton,
+        Self::SortFolded,
+        Self::CountHidden,
+        Self::TogglesFolded,
+    ];
+
+    /// The view switcher is drawn (where there is one).
+    pub(super) const fn switcher(self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    /// Sort is in "⋯" (where there is a Sort).
+    pub(super) const fn sort_folded(self) -> bool {
+        matches!(self, Self::SortFolded | Self::CountHidden | Self::TogglesFolded)
+    }
+
+    /// The item count is left out (where there is one).
+    pub(super) const fn count_hidden(self) -> bool {
+        matches!(self, Self::CountHidden | Self::TogglesFolded)
+    }
+
+    /// Synchronized browsing and compare are in "⋯" (where there are any).
+    pub(super) const fn toggles_folded(self) -> bool {
+        matches!(self, Self::TogglesFolded)
+    }
+}
+
 /// How the pane row is drawn, and whether the path bar has to collapse levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RowLayout {
-    /// The view switcher is drawn, not the view options button alone.
-    pub(super) switcher: bool,
-    /// Sort is in "⋯".
-    pub(super) sort_folded: bool,
-    /// The item count is left out.
-    pub(super) count_hidden: bool,
-    /// Synchronized browsing and compare are in "⋯".
-    pub(super) toggles_folded: bool,
+    /// How far the view tools have given way.
+    pub(super) tools: Tools,
+    /// Some of the view tools the row has (Sort, the dual pane toggles) are in "⋯".
+    pub(super) in_more: bool,
     /// The selection's layout; `None` with nothing selected.
     pub(super) selection: Option<SelectionLayout>,
     /// Even everything folded leaves the path bar short of its whole width: it collapses levels.
@@ -210,14 +253,34 @@ pub(super) struct RowLayout {
 }
 
 impl RowLayout {
+    /// The view switcher is drawn (where there is one).
+    pub(super) const fn switcher(&self) -> bool {
+        self.tools.switcher()
+    }
+
+    /// Sort is in "⋯" (where there is a Sort).
+    pub(super) const fn sort_folded(&self) -> bool {
+        self.tools.sort_folded()
+    }
+
+    /// The item count is left out (where there is one).
+    pub(super) const fn count_hidden(&self) -> bool {
+        self.tools.count_hidden()
+    }
+
+    /// Synchronized browsing and compare are in "⋯" (where there are any).
+    pub(super) const fn toggles_folded(&self) -> bool {
+        self.tools.toggles_folded()
+    }
+
     /// Some of the view tools are in "⋯".
     pub(super) const fn tools_folded(&self) -> bool {
-        self.sort_folded || self.toggles_folded
+        self.in_more
     }
 
     /// "⋯" among the view tools: some of them are in it, and no selection's "⋯" holds them.
     pub(super) const fn tools_more(&self) -> bool {
-        self.tools_folded() && self.selection.is_none()
+        self.in_more && self.selection.is_none()
     }
 }
 
@@ -227,7 +290,7 @@ impl RowParts {
     pub(super) fn widths(&self, layout: &RowLayout) -> (f32, f32) {
         let info = match (&self.info, &layout.selection) {
             (Info::Folder { count, rest }, _) => {
-                if layout.count_hidden {
+                if layout.count_hidden() {
                     *rest
                 } else {
                     count + rest
@@ -236,13 +299,13 @@ impl RowParts {
             (Info::Selection(parts), Some(selection)) => parts.width(selection),
             (Info::Selection(_), None) => 0.,
         };
-        let view = if layout.switcher {
+        let view = if layout.switcher() {
             self.switcher
         } else {
             self.view
         };
-        let sort = if layout.sort_folded { 0. } else { self.sort };
-        let toggles = if layout.toggles_folded {
+        let sort = if layout.sort_folded() { 0. } else { self.sort };
+        let toggles = if layout.toggles_folded() {
             0.
         } else {
             self.toggles
@@ -259,24 +322,17 @@ impl RowParts {
         info.ceil() + tools.ceil() + path.ceil() <= room
     }
 
-    /// The item count is there to hide.
-    const fn has_count(&self) -> bool {
-        matches!(self.info, Info::Folder { count, .. } if count > 0.)
-    }
-
-    /// The row with `sort`, `count` and `toggles` folded as far as they are there, and the
-    /// selection, if any, all drawn.
-    const fn tools(&self, sort: bool, count: bool, toggles: bool) -> RowLayout {
-        let sort_folded = sort && self.sort > 0.;
-        let toggles_folded = toggles && self.toggles > 0.;
+    /// The row with its view tools given way as far as `tools`, and the selection, if any, all
+    /// drawn.
+    pub(super) const fn at(&self, tools: Tools) -> RowLayout {
+        let in_more = (tools.sort_folded() && self.sort > 0.)
+            || (tools.toggles_folded() && self.toggles > 0.);
         RowLayout {
-            switcher: false,
-            sort_folded,
-            count_hidden: count && self.has_count(),
-            toggles_folded,
+            tools,
+            in_more,
             selection: match &self.info {
                 Info::Folder { .. } => None,
-                Info::Selection(parts) => Some(parts.everything(sort_folded || toggles_folded)),
+                Info::Selection(parts) => Some(parts.everything(in_more)),
             },
             collapse: false,
         }
@@ -284,19 +340,16 @@ impl RowParts {
 
     /// Everything drawn.
     pub(super) const fn everything(&self) -> RowLayout {
-        RowLayout {
-            switcher: self.switcher > self.view,
-            ..self.tools(false, false, false)
-        }
+        self.at(Tools::All)
     }
 
     /// Everything that folds, folded.
     pub(super) const fn folded(&self) -> RowLayout {
-        let row = self.tools(true, true, true);
+        let row = self.at(Tools::TogglesFolded);
         RowLayout {
             selection: match &self.info {
                 Info::Folder { .. } => None,
-                Info::Selection(parts) => Some(parts.folded(row.tools_folded())),
+                Info::Selection(parts) => Some(parts.folded(row.in_more)),
             },
             ..row
         }
@@ -305,26 +358,21 @@ impl RowParts {
 
 /// How the pane row fits: the roomiest layout that leaves the path bar `path` wide (every level)
 /// out of the `room` the path bar, the info and the foldable view tools share, or everything
-/// folded with the path bar collapsing levels when not even that does.
+/// folded with the path bar collapsing levels when not even that does. A step that folds
+/// something the row doesn't have is as wide as the one before it, so it is never the one taken.
 pub(super) fn row_layout(room: f32, path: f32, parts: &RowParts) -> RowLayout {
-    let tools = [
-        parts.everything(),
-        parts.tools(false, false, false),
-        parts.tools(true, false, false),
-        parts.tools(true, true, false),
-        parts.tools(true, true, true),
-    ];
-    let last = parts.tools(true, true, true);
+    let last = parts.at(Tools::TogglesFolded);
     let selection = match &parts.info {
         Info::Folder { .. } => None,
-        Info::Selection(selection) => Some(selection.steps(last.tools_folded()).skip(1)),
+        Info::Selection(selection) => Some(selection.steps(last.in_more).skip(1)),
     };
     let selection = selection.into_iter().flatten().map(|selection| RowLayout {
         selection: Some(selection),
         ..last
     });
-    tools
+    Tools::ALL
         .into_iter()
+        .map(|tools| parts.at(tools))
         .chain(selection)
         .find(|layout| parts.fits(layout, path, room))
         .unwrap_or_else(|| RowLayout {
@@ -507,15 +555,15 @@ mod tests {
         // 320 + 114 + 46 + 492.
         let all = at(972.);
         assert_eq!(all, parts.everything());
-        assert!(all.switcher && !all.sort_folded);
+        assert!(all.switcher() && !all.sort_folded());
         // The switcher goes: 320 + 42 + 46 + 492.
         let compact = at(971.);
-        assert!(!compact.switcher && !compact.sort_folded);
+        assert!(!compact.switcher() && !compact.sort_folded());
         assert_eq!(compact.selection, Some(layout(Summary::Full, 0).0));
         assert_eq!(at(900.), compact);
         // Sort goes into the selection's "⋯" (26 and a gap): 350 + 42 + 492.
         let sort = at(899.);
-        assert!(!sort.switcher && sort.sort_folded && !sort.tools_more());
+        assert!(!sort.switcher() && sort.sort_folded() && !sort.tools_more());
         let selection = sort.selection.expect("a selection");
         assert_eq!((selection.summary, selection.hidden), (Summary::Full, 0));
         assert!(selection.more());
@@ -553,18 +601,18 @@ mod tests {
         // 150 + 114 + 46 + 492.
         assert_eq!(at(802.), parts.everything());
         let compact = at(801.);
-        assert!(!compact.switcher && !compact.sort_folded && compact.selection.is_none());
+        assert!(!compact.switcher() && !compact.sort_folded() && compact.selection.is_none());
         // 150 + 42 + 46 + 492 = 730; with "⋯" for Sort: 150 + 42 + 30 + 492 = 714.
         assert_eq!(at(730.), compact);
         let sort = at(729.);
-        assert!(sort.sort_folded && sort.tools_more() && !sort.collapse);
+        assert!(sort.sort_folded() && sort.tools_more() && !sort.collapse);
         assert_eq!(at(714.), sort);
         assert!(at(713.).collapse);
         // While searching there is no Sort, and nothing to fold after the switcher.
         let searching = RowParts { sort: 0., ..parts };
         let at = |room: f32| row_layout(room, PATH, &searching);
         assert!(!at(684.).collapse && !at(684.).tools_more());
-        assert!(at(683.).collapse && !at(683.).sort_folded);
+        assert!(at(683.).collapse && !at(683.).tools_more());
     }
 
     /// #474: the two rows from the machine's log that left the path bar a level short. The room
@@ -588,14 +636,14 @@ mod tests {
         let row = row_layout(858., 532.6, &parts);
         assert_eq!(row, parts.everything());
         assert!(!row.collapse);
-        assert!(!row_layout(857., 532.6, &parts).switcher);
+        assert!(!row_layout(857., 532.6, &parts).switcher());
         // 1360 px, one item selected: Sort in "⋯", the selection 391.4 wide, the view button 42.
         let parts = tools(Info::Selection(SelectionParts {
             full: 152.4,
             ..measured()
         }));
         let row = row_layout(967., 532.6, &parts);
-        assert!(!row.collapse && !row.switcher && row.sort_folded, "{row:?}");
+        assert!(!row.collapse && !row.switcher() && row.sort_folded(), "{row:?}");
         let selection = row.selection.expect("a selection");
         assert_eq!((selection.summary, selection.hidden), (Summary::Full, 0));
         assert!((parts.widths(&row).0.ceil() + 42. + 533. - 967.).abs() < 0.01);
@@ -620,29 +668,21 @@ mod tests {
             },
         };
         let at = |room: f32| row_layout(room, 532.6, &parts);
-        let row = |sort, count, toggles| RowLayout {
-            switcher: false,
-            sort_folded: sort,
-            count_hidden: count,
-            toggles_folded: toggles,
-            selection: None,
-            collapse: false,
-        };
-        // 78 + 42 + 46 + 64 + 533.
-        assert_eq!(at(763.), row(false, false, false));
+        // 78 + 42 + 46 + 64 + 533 (no switcher in a split pane: the view button all along).
+        assert_eq!(at(763.), parts.at(Tools::All));
         // Sort into "⋯": 78 + 42 + 64 + 30 + 533.
-        assert_eq!(at(762.), row(true, false, false));
-        assert_eq!(at(747.), row(true, false, false));
+        assert_eq!(at(762.), parts.at(Tools::SortFolded));
+        assert_eq!(at(747.), parts.at(Tools::SortFolded));
         // The count goes: 28 + 136 + 533.
-        assert_eq!(at(746.), row(true, true, false));
-        assert_eq!(at(697.), row(true, true, false));
+        assert_eq!(at(746.), parts.at(Tools::CountHidden));
+        assert_eq!(at(697.), parts.at(Tools::CountHidden));
         // The toggles into "⋯": 28 + 42 + 30 + 533.
-        assert_eq!(at(696.), row(true, true, true));
-        assert_eq!(at(633.), row(true, true, true));
-        assert!(at(633.).tools_more());
+        assert_eq!(at(696.), parts.at(Tools::TogglesFolded));
+        assert_eq!(at(633.), parts.at(Tools::TogglesFolded));
+        assert!(at(633.).tools_more() && at(633.).selection.is_none());
         // Only now the path.
         let last = at(632.);
-        assert!(last.collapse && last.toggles_folded && last.count_hidden);
+        assert!(last.collapse && last.toggles_folded() && last.count_hidden());
     }
 
     prop_compose! {
@@ -736,36 +776,9 @@ mod tests {
                 ..base
             });
         }
-        // The view tools, the last folded first; the selection's "⋯" holds what is still in it.
-        let unfold = |row: RowLayout| RowLayout {
-            selection: row.selection.map(|s| SelectionLayout {
-                tools: row.tools_folded(),
-                ..s
-            }),
-            ..row
-        };
-        if base.toggles_folded {
-            return Some(unfold(RowLayout {
-                toggles_folded: false,
-                ..base
-            }));
-        }
-        if base.count_hidden {
-            return Some(RowLayout {
-                count_hidden: false,
-                ..base
-            });
-        }
-        if base.sort_folded {
-            return Some(unfold(RowLayout {
-                sort_folded: false,
-                ..base
-            }));
-        }
-        (!base.switcher && parts.switcher > parts.view).then_some(RowLayout {
-            switcher: true,
-            ..base
-        })
+        // The view tools a step back, the selection all drawn.
+        let at = Tools::ALL.iter().position(|t| *t == base.tools)?;
+        at.checked_sub(1).map(|before| parts.at(Tools::ALL[before]))
     }
 
     /// Whether the selection in `layout` has given anything up.
@@ -805,15 +818,7 @@ mod tests {
         ) {
             let narrow = row_layout(room, path, &parts);
             let wide = row_layout(room + more_room, path, &parts);
-            prop_assert!(wide.switcher >= narrow.switcher, "{:?} vs {:?}", wide, narrow);
-            prop_assert!(wide.sort_folded <= narrow.sort_folded, "{:?} vs {:?}", wide, narrow);
-            prop_assert!(wide.count_hidden <= narrow.count_hidden, "{:?} vs {:?}", wide, narrow);
-            prop_assert!(
-                wide.toggles_folded <= narrow.toggles_folded,
-                "{:?} vs {:?}",
-                wide,
-                narrow
-            );
+            prop_assert!(wide.tools <= narrow.tools, "{:?} vs {:?}", wide, narrow);
             prop_assert!(wide.collapse <= narrow.collapse, "{:?} vs {:?}", wide, narrow);
             if let (Some(w), Some(n)) = (wide.selection, narrow.selection) {
                 prop_assert!(w.hidden <= n.hidden, "{:?} vs {:?}", wide, narrow);
@@ -833,10 +838,8 @@ mod tests {
         ) {
             let layout = row_layout(room, path, &parts);
             if layout.collapse {
-                prop_assert!(!layout.switcher, "{:?}", layout);
-                prop_assert_eq!(layout.sort_folded, parts.sort > 0.);
-                prop_assert_eq!(layout.toggles_folded, parts.toggles > 0.);
-                prop_assert_eq!(layout.count_hidden, parts.has_count());
+                prop_assert_eq!(layout.tools, Tools::TogglesFolded);
+                prop_assert_eq!(layout.tools_folded(), parts.sort > 0. || parts.toggles > 0.);
                 if let Some(selection) = layout.selection {
                     prop_assert!(selection.folded(), "{:?}", layout);
                     prop_assert_eq!(selection.summary, Summary::Pill);
@@ -854,23 +857,13 @@ mod tests {
             room in 0_f32..1600.,
         ) {
             let layout = row_layout(room, path, &parts);
-            let sort = parts.sort > 0.;
-            if layout.sort_folded {
-                prop_assert!(!layout.switcher, "{:?}", layout);
-            }
-            if layout.count_hidden {
-                prop_assert!(!layout.switcher, "{:?}", layout);
-                prop_assert_eq!(layout.sort_folded, sort);
-            }
-            if layout.toggles_folded {
-                prop_assert!(!layout.switcher, "{:?}", layout);
-                prop_assert_eq!(layout.sort_folded, sort);
-                prop_assert_eq!(layout.count_hidden, parts.has_count());
-            }
+            // The view tools' own order is the order of [`Tools`]: a step keeps the ones before
+            // it. What "⋯" holds of them is what the row has of the steps taken.
+            let held = (layout.sort_folded() && parts.sort > 0.)
+                || (layout.toggles_folded() && parts.toggles > 0.);
+            prop_assert_eq!(layout.tools_folded(), held);
             if selection_gave_way(&parts, &layout) {
-                prop_assert!(!layout.switcher, "{:?}", layout);
-                prop_assert_eq!(layout.sort_folded, sort);
-                prop_assert_eq!(layout.toggles_folded, parts.toggles > 0.);
+                prop_assert_eq!(layout.tools, Tools::TogglesFolded);
             }
             if let Some(selection) = layout.selection {
                 prop_assert_eq!(selection.tools, layout.tools_folded());

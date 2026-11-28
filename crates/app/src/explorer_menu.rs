@@ -1712,12 +1712,15 @@ impl Explorer {
         };
         // Opened from the pane row's "⋯" with Sort folded into it (#474): its choices come along.
         // The background menu has them anyway.
-        if std::mem::take(&mut self.row_fold.menu_adds_sort) && !targets.is_empty() {
+        // The background menu has "Sort by" anyway, and while searching there is no Sort.
+        let from_more = std::mem::take(&mut self.row_fold.menu_from_more);
+        let row = self.row_fold.row.filter(|_| from_more);
+        if row.is_some_and(|row| row.sort_folded()) && !self.search_mode && !targets.is_empty() {
             entries.extend([MenuEntry::Separator, self.sort_submenu()]);
         }
         // With synchronized browsing and compare folded into it: they come along, checked while
         // on, as the buttons show them (#474).
-        if std::mem::take(&mut self.row_fold.menu_adds_toggles) && self.pane.pair_toggles {
+        if row.is_some_and(|row| row.toggles_folded()) && self.pane.pair_toggles {
             entries.extend(self.dual_toggle_items());
         }
         let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);

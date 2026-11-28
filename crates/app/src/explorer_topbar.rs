@@ -385,9 +385,7 @@ impl Explorer {
         // when the row says so.
         let selecting = !self.search_mode && !self.selection.is_empty();
         let fold = self.row_layout(selecting, window, cx);
-        self.row_fold.sort_in_more = fold.sort_folded;
-        self.row_fold.toggles_in_more = fold.toggles_folded;
-        self.row_fold.path_collapses = fold.collapse;
+        self.row_fold.row = Some(fold);
         // A narrow path bar (as laid out on the last frame) keeps only the current folder.
         let slot = self.path_slot.get();
         let compact = fold.collapse && slot > px(0.) && slot < path_compact_below();
@@ -409,7 +407,7 @@ impl Explorer {
         let chip = self.render_filter_chip(cx);
         let info = match fold.selection {
             Some(layout) if selecting => self.render_selection_actions(layout, cx),
-            _ => self.render_folder_actions(self.compact_bar(), !fold.count_hidden, cx),
+            _ => self.render_folder_actions(self.compact_bar(), !fold.count_hidden(), cx),
         };
         let view = self
             .render_view_controls(&fold, window, cx)

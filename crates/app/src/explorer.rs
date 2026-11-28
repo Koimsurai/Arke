@@ -733,19 +733,29 @@ struct Filtered {
 /// What the pane row decided on this frame that others act on (#474).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RowFold {
+    /// The pane row's layout on this frame (`None` before the first).
+    row: Option<fold::RowLayout>,
+    /// The context menu being made was opened from "⋯": it gets what the row folded into it.
+    menu_from_more: bool,
+}
+
+impl RowFold {
     /// The pane row folded Sort into "⋯".
-    pub(crate) sort_in_more: bool,
-    /// The context menu being made was opened from "⋯" with Sort in it: it gets "Sort by".
-    pub(crate) menu_adds_sort: bool,
+    pub(crate) fn sort_in_more(&self) -> bool {
+        self.row.is_some_and(|row| row.sort_folded())
+    }
+
     /// The pane row folded synchronized browsing and compare into "⋯".
-    pub(crate) toggles_in_more: bool,
-    /// The context menu being made was opened from "⋯" with the dual pane toggles in it: it gets
-    /// them, checked while on.
-    pub(crate) menu_adds_toggles: bool,
+    pub(crate) fn toggles_in_more(&self) -> bool {
+        self.row.is_some_and(|row| row.toggles_folded())
+    }
+
     /// The path bar collapses levels: even with everything else folded it is short of its whole
     /// width. The path bar takes this from the row's layout rather than deciding from its slot
-    /// on its own, so the two never disagree (#474).
-    pub(crate) path_collapses: bool,
+    /// on its own, so the two never disagree.
+    pub(crate) fn path_collapses(&self) -> bool {
+        self.row.is_some_and(|row| row.collapse)
+    }
 }
 
 /// Path slot, info and tools widths, the path's whole width, and the layout last logged for the

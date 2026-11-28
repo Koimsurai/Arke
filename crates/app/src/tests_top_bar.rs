@@ -713,7 +713,7 @@ fn each_pane_folds_its_own_row(cx: &mut TestAppContext) {
     let (ws, left, cx) = open_deep(cx, 2400.);
     let right = split(&ws, &left, cx);
     let sort_folded = |cx: &mut VisualTestContext, view: &Entity<Explorer>| {
-        view.update(cx, |v, _| v.row_fold.sort_in_more)
+        view.update(cx, |v, _| v.row_fold.sort_in_more())
     };
     let mut found = None;
     for width in (800..=2400_u16).rev().step_by(20) {
@@ -758,14 +758,14 @@ fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
         let at = format!("{width} px: {fold:?}, {shown} of {levels}; {row}");
         // While the toggles are drawn, the path keeps its levels; they go after Sort.
         assert!(
-            fold.toggles_in_more || shown == levels,
+            fold.toggles_in_more() || shown == levels,
             "the path bar gives way last: {at}"
         );
         assert!(
-            !fold.toggles_in_more || fold.sort_in_more,
+            !fold.toggles_in_more() || fold.sort_in_more(),
             "Sort goes first: {at}"
         );
-        if fold.toggles_in_more && shown == levels {
+        if fold.toggles_in_more() && shown == levels {
             found = Some(width);
             break;
         }

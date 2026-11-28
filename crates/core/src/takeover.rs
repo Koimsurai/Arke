@@ -277,8 +277,8 @@ fn explorer_tokens(args: &str) -> Option<Vec<String>> {
 }
 
 /// The parsing name Explorer's window will show for one object, when that is certain from the text
-/// alone: absolute paths (trailing separators dropped, `.`/`..` and `/` refused) and the shell
-/// names Arke knows.
+/// alone: absolute paths (trailing separators dropped, `.`/`..` refused; `/` in a drive path read
+/// as `\`, as Explorer does, elsewhere refused) and the shell names Arke knows.
 fn explorer_location(object: &str) -> Option<String> {
     let lower = object.to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("shell:") {
@@ -294,6 +294,15 @@ fn explorer_location(object: &str) -> Option<String> {
     }
     let bytes = object.as_bytes();
     let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    // Programs built on Qt and the like pass `C:/dir/x.txt`; Explorer opens it as `C:\dir\x.txt`.
+    // The checks below then apply to the backslash spelling. `//server/share` stays refused.
+    let slashed;
+    let object = if drive && object.contains('/') {
+        slashed = object.replace('/', "\\");
+        slashed.as_str()
+    } else {
+        object
+    };
     if !(drive || object.starts_with(r"\\")) || object.contains('/') {
         return None;
     }
@@ -995,6 +1004,37 @@ mod tests {
             None
         );
         assert_eq!(parse_explorer_args("/select"), None);
+    }
+
+    /// Programs built on Qt (WeChat, browsers' "Show in folder") pass forward slashes; Explorer
+    /// opens them as backslash paths, so the early path takes them too instead of letting the
+    /// window flash.
+    #[test]
+    fn reads_forward_slashes_in_a_drive_path_as_backslashes() {
+        assert_eq!(
+            parse_explorer_args(r#"/select,"C:/Users/me/Downloads/a b.txt""#),
+            launch(r"C:\Users\me\Downloads", Some("a b.txt"))
+        );
+        assert_eq!(
+            parse_explorer_args("/select,D:/dir/x.txt"),
+            launch(r"D:\dir", Some("x.txt"))
+        );
+        assert_eq!(parse_explorer_args("C:/dir/"), launch(r"C:\dir", None));
+        assert_eq!(
+            parse_explorer_args(r"/select,C:/dir\sub/x.txt"),
+            launch(r"C:\dir\sub", Some("x.txt")),
+            "mixed separators"
+        );
+        // The checks that guard backslash paths still apply after the slashes are read.
+        assert_eq!(parse_explorer_args("/select,C:/dir/../x.txt"), None);
+        assert_eq!(parse_explorer_args("/select,C:/dir//x.txt"), None);
+        assert_eq!(
+            parse_explorer_args("C:dir/x"),
+            None,
+            "relative to the drive's folder"
+        );
+        // A share spelled with slashes is left to the watcher.
+        assert_eq!(parse_explorer_args("/select,//nas/share/a.txt"), None);
     }
 
     #[test]

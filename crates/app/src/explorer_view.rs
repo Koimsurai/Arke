@@ -35,8 +35,8 @@ use super::ops::DeletePermanently;
 use super::toolbar::ToolbarStop as _;
 use super::{
     CopyFiles, CutFiles, DeleteFiles, ErrorAction, Escape, Explorer, ExplorerEvent, FocusOtherPane,
-    GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, RenameFile, RowDrawn, ViewColumns,
-    ViewDetails, ViewMode,
+    GoBack, GoForward, GoUp, NewFolder, OpenSelected, PasteFiles, RenameFile, RowDrawn,
+    ViewColumns, ViewDetails, ViewMode,
 };
 use super::{DragPreview, DraggedFiles, drop_external_into, drop_into};
 use crate::a11y::A11yExt as _;

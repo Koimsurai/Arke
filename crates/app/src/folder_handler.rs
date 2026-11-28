@@ -386,43 +386,55 @@ mod tests {
             self.states.lock().push(state);
         }
 
-        /// How many recorded states had a folder verb with an empty `DelegateExecute`.
-        fn empty_delegates(&self) -> usize {
-            let verbs = [DIR_CMD.to_lowercase(), EXPLORE_CMD.to_lowercase()];
-            self.states
-                .lock()
-                .iter()
-                .filter(|state| {
-                    state.iter().any(|(key, name, text)| {
-                        verbs.contains(key) && name == "delegateexecute" && text.is_empty()
-                    })
-                })
-                .count()
+        /// How many recorded states `bad` holds for.
+        fn count(&self, bad: impl Fn(&[(String, String, String)]) -> bool) -> usize {
+            self.states.lock().iter().filter(|state| bad(state)).count()
         }
+    }
 
-        /// How many recorded states had a folder verb with a command but without Arke's class id
-        /// as its `DelegateExecute`.
-        fn commands_without_arkes_delegate(&self) -> usize {
-            let verbs = [DIR_CMD.to_lowercase(), EXPLORE_CMD.to_lowercase()];
-            self.states
-                .lock()
-                .iter()
-                .filter(|state| {
-                    verbs.iter().any(|verb| {
-                        let value = |wanted: &str| {
-                            state
-                                .iter()
-                                .find(|(key, name, _)| key == verb && name == wanted)
-                                .map(|(_, _, text)| text.as_str())
-                        };
-                        value("").is_some()
-                            && value("delegateexecute").is_none_or(|id| {
-                                !id.eq_ignore_ascii_case(folder_handler::ARKE_CLSID)
-                            })
-                    })
-                })
-                .count()
-        }
+    /// The folder verbs' command keys.
+    const VERBS: [&str; 2] = [DIR_CMD, EXPLORE_CMD];
+
+    /// A value in a [`MemoryRegistry::snapshot`], where keys and names are lower case.
+    fn value<'a>(state: &'a [(String, String, String)], key: &str, name: &str) -> Option<&'a str> {
+        let key = key.to_lowercase();
+        state
+            .iter()
+            .find(|(k, n, _)| *k == key && n == name)
+            .map(|(_, _, text)| text.as_str())
+    }
+
+    /// A folder verb has an empty `DelegateExecute`.
+    fn empty_delegate(state: &[(String, String, String)]) -> bool {
+        VERBS
+            .iter()
+            .any(|verb| value(state, verb, "delegateexecute") == Some(""))
+    }
+
+    /// A folder verb has a command without Arke's class id as its `DelegateExecute`.
+    fn command_without_arkes_delegate(state: &[(String, String, String)]) -> bool {
+        VERBS.iter().any(|verb| {
+            value(state, verb, "").is_some()
+                && value(state, verb, "delegateexecute")
+                    .is_none_or(|id| !id.eq_ignore_ascii_case(folder_handler::ARKE_CLSID))
+        })
+    }
+
+    /// A folder verb has a command with a missing or empty `DelegateExecute`.
+    fn command_without_a_delegate(state: &[(String, String, String)]) -> bool {
+        VERBS.iter().any(|verb| {
+            value(state, verb, "").is_some()
+                && value(state, verb, "delegateexecute").is_none_or(str::is_empty)
+        })
+    }
+
+    /// A folder verb names Arke's class while the class is not registered.
+    fn delegate_to_a_missing_class(state: &[(String, String, String)]) -> bool {
+        value(state, COM_SERVER, "").is_none()
+            && VERBS.iter().any(|verb| {
+                value(state, verb, "delegateexecute")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(folder_handler::ARKE_CLSID))
+            })
     }
 
     impl Registry for Recording {
@@ -542,16 +554,81 @@ mod tests {
         );
 
         assert!(!rec.states.lock().is_empty(), "writes were recorded");
-        assert_eq!(rec.empty_delegates(), 0, "{:?}", rec.states.lock());
+        assert_eq!(rec.count(empty_delegate), 0, "{:?}", rec.states.lock());
         assert_eq!(
-            rec.commands_without_arkes_delegate(),
+            rec.count(command_without_arkes_delegate),
             0,
             "a command never sits there without Arke's class id: {:?}",
             rec.states.lock()
         );
 
+        rec.states.lock().clear();
         handler(r"E:\New\arke.exe").sync(false, false);
         assert_eq!(rec.reg.snapshot(), before, "turning off restores exactly");
+        assert_eq!(
+            rec.count(|state| command_without_a_delegate(state) && state != before.as_slice()),
+            0,
+            "turning off never leaves a command without its DelegateExecute: {:?}",
+            rec.states.lock()
+        );
+        assert_eq!(
+            rec.count(delegate_to_a_missing_class),
+            0,
+            "the class goes last: {:?}",
+            rec.states.lock()
+        );
+    }
+
+    /// Turning off puts each verb's command back before its `DelegateExecute` and the COM class
+    /// last, whatever order the backup lists them in: as 0.10.2 wrote it (each command before its
+    /// `DelegateExecute`, the class after the verbs), as this build writes it (the class first,
+    /// each `DelegateExecute` before its command), or reversed (#540).
+    #[test]
+    fn turning_off_restores_in_a_safe_order_whatever_the_backup_order() {
+        for order in ["0.10.2", "this build", "reversed"] {
+            let rec = Arc::new(Recording::default());
+            let backup = Arc::new(MemoryBackup::default());
+            let exe = PathBuf::from(r"C:\Apps\Arke\arke.exe");
+            rec.reg.put(DIR_CMD, "DelegateExecute", STOCK_DELEGATE);
+            let before = rec.reg.snapshot();
+            if order == "0.10.2" {
+                // What 0.10.2 registered, and the order its backup lists the values in.
+                folder_handler::apply_scoped(&rec.reg, &*backup, &exe, true).unwrap();
+            }
+            let handler = Handler::new(
+                Arc::clone(&rec) as Arc<dyn Registry>,
+                Arc::clone(&backup) as Arc<dyn BackupStore>,
+                exe,
+            )
+            .with_com_check(Arc::new(|| true));
+            handler.sync(true, true);
+            assert_eq!(
+                rec.reg.text(EXPLORE_CMD, "DelegateExecute").as_deref(),
+                Some(folder_handler::ARKE_CLSID),
+                "{order}"
+            );
+            if order == "reversed" {
+                let mut saved = backup.load().unwrap().unwrap();
+                saved.entries.reverse();
+                backup.save(&saved).unwrap();
+            }
+
+            rec.states.lock().clear();
+            handler.sync(false, true);
+            assert_eq!(rec.reg.snapshot(), before, "{order}: restored exactly");
+            assert_eq!(
+                rec.count(|state| command_without_a_delegate(state) && state != before.as_slice()),
+                0,
+                "{order}: a command without its DelegateExecute: {:?}",
+                rec.states.lock()
+            );
+            assert_eq!(
+                rec.count(delegate_to_a_missing_class),
+                0,
+                "{order}: a verb names the class after it is gone: {:?}",
+                rec.states.lock()
+            );
+        }
     }
 
     #[gpui::test]

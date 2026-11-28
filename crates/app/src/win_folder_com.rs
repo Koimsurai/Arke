@@ -14,7 +14,9 @@
 //! Whether COM accepts the class is checked before the verbs rely on it ([`works`]): DCOM does not
 //! accept a class registered per user (`HKCU`) whose exe is in a folder an administrator created
 //! (a per-machine install under Program Files). The server starts and registers, but callers wait
-//! about a minute and get `CO_E_SERVER_EXEC_FAILURE`. Then the verbs keep running the command.
+//! about a minute and get `CO_E_SERVER_EXEC_FAILURE`. Then the verbs keep running the command
+//! (`folder_handler::verbs_without_com` decides what they get instead). Only the class goes in
+//! before the check; the verbs are written after it, straight in the mode it found (#540).
 #![allow(
     clippy::inline_always,
     clippy::ref_as_ptr,

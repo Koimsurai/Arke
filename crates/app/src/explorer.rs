@@ -832,6 +832,8 @@ pub(crate) struct Explorer {
     /// Width of the pane row's item count or selection actions (last frame). With
     /// [`Self::path_slot`] it is the room the path bar and the selection share (#388).
     info_slot: path_bar::SlotWidth,
+    /// What the selection's layout was last logged with (`arke::fold` at debug level, #528).
+    fold_logged: std::cell::Cell<Option<(f32, f32, f32, fold::SelectionLayout)>>,
     /// The title row's search box width and the press-to-drag on the path bar.
     top_row: top_bar::TopRow,
     /// The pane row's buttons from the keyboard (F6).
@@ -1253,6 +1255,7 @@ impl Explorer {
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
             info_slot: path_bar::SlotWidth::default(),
+            fold_logged: std::cell::Cell::new(None),
             top_row: top_bar::TopRow::default(),
             toolbar: toolbar::ToolbarKeys::new(cx.focus_handle()),
             filter_input,

@@ -597,22 +597,38 @@ impl Explorer {
             };
             return fold::selection_layout(room, 0., parts);
         }
-        let room = path + self.info_slot.get();
+        let info = self.info_slot.get();
         let need = self
             .path_full_width(window)
             .max(super::top_bar::path_compact_below());
-        fold::selection_layout(f32::from(room), f32::from(need), parts)
+        let (path, info, need) = (f32::from(path), f32::from(info), f32::from(need));
+        let layout = fold::selection_layout(path + info, need, parts);
+        // Once per change: the row draws on every hover.
+        let seen = (path, info, need, layout);
+        if log::log_enabled!(target: "arke::fold", log::Level::Debug)
+            && self.fold_logged.replace(Some(seen)) != Some(seen)
+        {
+            log::debug!(
+                target: "arke::fold",
+                "room {} = path slot {path} + info {info}; path needs {need}, selection {} wide: \
+                 {layout:?}",
+                path + info,
+                parts.width(&layout),
+            );
+        }
+        layout
     }
 
     /// Records the width of the pane row's info (the item count or the selection's actions) for
     /// [`Self::selection_layout`], drawing once more when it changed, as the path bar's slot does
-    /// (they change together, so this adds no frame of its own).
+    /// (they change together, so this adds no frame of its own). On the next frame: a refresh
+    /// while drawing is dropped (#528).
     fn info_probe(&self) -> impl IntoElement + use<> {
         let slot = Rc::clone(&self.info_slot);
         gpui::canvas(
             move |b, window, _| {
                 if slot.replace(b.size.width) != b.size.width {
-                    window.refresh();
+                    window.on_next_frame(|window, _| window.refresh());
                 }
             },
             |_, (), _, _| {},

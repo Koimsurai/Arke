@@ -3257,18 +3257,35 @@ mod tests {
             );
             wait("journal caught up", || ready(&svc) && svc.status().live);
             let users = svc
-                .usage_below(Path::new(r"C:\users"), 0, Some(&profiles), &cancel, &mut |_| {})
+                .usage_below(
+                    Path::new(r"C:\users"),
+                    0,
+                    Some(&profiles),
+                    &cancel,
+                    &mut |_| {},
+                )
                 .expect("from the index");
             assert_eq!(users.usage.bytes, 310, "listed: {listed}");
             if listed {
                 assert!(users.usage.partial, "Bob's can't be read");
             }
             let mine = svc
-                .usage_below(Path::new(r"C:\Users\me"), 0, Some(&profiles), &cancel, &mut |_| {})
+                .usage_below(
+                    Path::new(r"C:\Users\me"),
+                    0,
+                    Some(&profiles),
+                    &cancel,
+                    &mut |_| {},
+                )
                 .expect("from the index");
             assert_eq!((mine.usage.bytes, mine.usage.partial), (10, false));
-            let inside =
-                svc.usage_below(Path::new(r"C:\Users\Default"), 0, Some(&profiles), &cancel, &mut |_| {});
+            let inside = svc.usage_below(
+                Path::new(r"C:\Users\Default"),
+                0,
+                Some(&profiles),
+                &cancel,
+                &mut |_| {},
+            );
             assert_eq!(inside, None, "walked instead");
             drop(svc);
         }
@@ -3295,7 +3312,10 @@ mod tests {
         );
         fs.insert_dir(r"C:\proj\target", vec![file("a.o", 1000), folder("deep")]);
         fs.insert_dir(r"C:\proj\target\deep", vec![file("b.o", 200)]);
-        fs.insert_dir(r"C:\proj\sub", vec![file("s.rs", 5), folder("node_modules")]);
+        fs.insert_dir(
+            r"C:\proj\sub",
+            vec![file("s.rs", 5), folder("node_modules")],
+        );
         fs.insert_dir(r"C:\proj\sub\node_modules", vec![file("x.js", 30)]);
         fs.insert_dir(r"C:\docs", vec![file("a.pdf", 50)]);
         fs.set_delay(r"C:\proj\target", Duration::from_millis(350));
@@ -3316,8 +3336,8 @@ mod tests {
                 reports.push(s.clone());
             })
             .expect("from the index");
-        let walk = crate::dirsize::usage(&*fs, Path::new(r"C:\"), 4096, &cancel, &mut |_| {})
-            .unwrap();
+        let walk =
+            crate::dirsize::usage(&*fs, Path::new(r"C:\"), 4096, &cancel, &mut |_| {}).unwrap();
         assert_eq!(space.usage, walk.usage, "same as walking everything");
         let by_name = |s: &crate::dirsize::Space| {
             let mut v: Vec<_> = s.children.iter().map(|(p, b)| (p.clone(), *b)).collect();
@@ -3325,10 +3345,20 @@ mod tests {
             v
         };
         assert_eq!(by_name(&space), by_name(&walk));
-        assert!(!reports.is_empty(), "reported while walking the skipped folders");
+        assert!(
+            !reports.is_empty(),
+            "reported while walking the skipped folders"
+        );
         assert!(reports.iter().all(|r| r.usage.bytes <= space.usage.bytes));
-        assert!(reports.iter().all(|r| r.usage.bytes >= 66), "the index part is in it");
-        assert!(reports.windows(2).all(|w| w[0].usage.bytes <= w[1].usage.bytes));
+        assert!(
+            reports.iter().all(|r| r.usage.bytes >= 66),
+            "the index part is in it"
+        );
+        assert!(
+            reports
+                .windows(2)
+                .all(|w| w[0].usage.bytes <= w[1].usage.bytes)
+        );
 
         // Nothing skipped below: no report.
         let mut quiet = 0;

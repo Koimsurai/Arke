@@ -425,7 +425,14 @@ pub fn usage_of_many(
         work: parking_lot::Condvar::new(),
         finished: parking_lot::Condvar::new(),
     };
-    run_walkers(fs, cluster, cancel, &walk, |s| s.groups.clone(), progress);
+    run_walkers(
+        fs,
+        cluster,
+        cancel,
+        &walk,
+        |s| s.groups.clone(),
+        &mut |groups: &Vec<Usage>| progress(groups),
+    );
     if cancel.load(Ordering::Relaxed) {
         return None;
     }

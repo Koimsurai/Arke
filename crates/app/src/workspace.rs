@@ -3119,7 +3119,10 @@ fn hand_drag_to_windows(
     // Enter the Windows drag loop only after this mouse event is handled, outside GPUI's event
     // dispatch.
     cx.spawn(async move |cx| {
-        let end = shell.drag_out(&pending.paths, pending.image.as_ref(), after_lost_press);
+        let end = match &pending.remote {
+            Some(items) => shell.drag_out_remote(items, pending.image.as_ref(), after_lost_press),
+            None => shell.drag_out(&pending.paths, pending.image.as_ref(), after_lost_press),
+        };
         if let Err(err) = &end {
             log::warn!("drag out to another program failed: {err}");
         }

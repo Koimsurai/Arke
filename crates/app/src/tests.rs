@@ -173,6 +173,8 @@ struct FakeShell {
     opened_sorts: Mutex<Vec<Option<SortSpec>>>,
     ops: Mutex<Vec<FileOp>>,
     clipboard: Mutex<Option<(ClipboardFiles, u32)>>,
+    /// Remote items Arke put on the clipboard as virtual files, and the sequence number then.
+    remote_clipboard: Mutex<Option<(Arc<crate::remote_shell::RemoteItems>, u32)>>,
     /// Virtual files on the clipboard (a Remote Desktop copy), read when there are no files.
     virtual_clipboard: Mutex<Option<FakeClipboardData>>,
     seq: AtomicU32,
@@ -658,7 +660,30 @@ impl Shell for FakeShell {
         );
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         *self.clipboard.lock() = Some((files.clone(), seq));
+        *self.remote_clipboard.lock() = None;
         Ok(seq)
+    }
+
+    fn set_clipboard_remote(
+        &self,
+        items: &Arc<crate::remote_shell::RemoteItems>,
+    ) -> Result<u32, ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "clipboard opened on the UI thread"
+        );
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        // Virtual files only: no paths on the clipboard.
+        *self.clipboard.lock() = None;
+        *self.remote_clipboard.lock() = Some((Arc::clone(items), seq));
+        Ok(seq)
+    }
+
+    fn clipboard_is_remote(&self, seq: u32) -> bool {
+        self.remote_clipboard
+            .lock()
+            .as_ref()
+            .is_some_and(|(_, s)| *s == seq)
     }
 
     fn clipboard_files(&self) -> Result<Option<(ClipboardFiles, u32)>, ShellError> {
@@ -683,9 +708,13 @@ impl Shell for FakeShell {
 
     fn clear_clipboard_if(&self, seq: u32) {
         let mut clip = self.clipboard.lock();
-        if clip.as_ref().is_some_and(|(_, s)| *s == seq) {
+        let mut remote = self.remote_clipboard.lock();
+        let files = clip.as_ref().is_some_and(|(_, s)| *s == seq);
+        let items = remote.as_ref().is_some_and(|(_, s)| *s == seq);
+        if files || items {
             *clip = None;
-            drop(clip);
+            *remote = None;
+            drop((clip, remote));
             // Bumped outside the lock, like `set_clipboard_files`.
             self.seq.fetch_add(1, Ordering::SeqCst);
         }
@@ -696,7 +725,9 @@ impl Shell for FakeShell {
     }
 
     fn clipboard_has_files(&self) -> bool {
-        self.clipboard.lock().is_some() || self.virtual_clipboard.lock().is_some()
+        self.clipboard.lock().is_some()
+            || self.remote_clipboard.lock().is_some()
+            || self.virtual_clipboard.lock().is_some()
     }
 
     fn is_local_disk(&self, path: &Path) -> bool {

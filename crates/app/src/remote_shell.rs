@@ -29,7 +29,8 @@ use crate::shell::{
 
 /// Largest file opened from a server (it is downloaded first).
 const OPEN_MAX: u64 = 4 * 1024 * 1024 * 1024;
-/// Most bytes downloaded to put remote items on the clipboard or drag them out.
+/// Most bytes downloaded to put remote items on the clipboard when they can't go there as
+/// virtual files.
 pub(crate) const STAGE_MAX: u64 = 512 * 1024 * 1024;
 
 fn remote(path: &Path) -> Option<RemoteUrl> {
@@ -167,6 +168,189 @@ fn local_names(dir: &Path) -> HashSet<String> {
             .map(|e| e.file_name().to_string_lossy().to_lowercase())
             .collect()
     })
+}
+
+// ───────────────────────── Virtual files (#529) ─────────────────────────
+
+/// Longest relative name a file descriptor holds (`cFileName`: 260 units with the terminator).
+const MAX_VIRTUAL_NAME: usize = 259;
+
+/// One file or folder of remote items handed to another program as a virtual file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VirtualItem {
+    /// Where it goes in the target folder: a Windows name for each level, joined by `\`.
+    pub(crate) rel: String,
+    /// The file on the server; `None` for a folder.
+    pub(crate) url: Option<RemoteUrl>,
+    /// Bytes, for files whose size is listed.
+    pub(crate) size: Option<u64>,
+    pub(crate) modified: Option<SystemTime>,
+}
+
+impl VirtualItem {
+    pub(crate) const fn is_dir(&self) -> bool {
+        self.url.is_none()
+    }
+}
+
+/// An item given, and the part of [`Listing::items`] it is.
+#[derive(Debug)]
+pub(crate) struct Top {
+    pub(crate) url: RemoteUrl,
+    pub(crate) range: std::ops::Range<usize>,
+    /// Nothing under it was left out (a folder link, a name too long).
+    pub(crate) whole: bool,
+}
+
+/// Every file and folder of some remote items, each folder before what is in it.
+#[derive(Debug, Default)]
+pub(crate) struct Listing {
+    pub(crate) items: Vec<VirtualItem>,
+    pub(crate) tops: Vec<Top>,
+    /// Per item: a program read all of its bytes (folders: from the start).
+    read: Vec<std::sync::atomic::AtomicBool>,
+}
+
+impl Listing {
+    /// A program read all of item `index`.
+    pub(crate) fn mark_read(&self, index: usize) {
+        if let Some(read) = self.read.get(index) {
+            read.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether a program read all of item `index`.
+    pub(crate) fn was_read(&self, index: usize) -> bool {
+        self.read
+            .get(index)
+            .is_some_and(|read| read.load(Ordering::Relaxed))
+    }
+
+    /// The items given that a program read in full, all of what is under them included: after
+    /// it moved them, only these originals may be deleted.
+    pub(crate) fn fully_read(&self) -> Vec<RemoteUrl> {
+        self.tops
+            .iter()
+            .filter(|top| top.whole && !top.range.is_empty())
+            .filter(|top| top.range.clone().all(|i| self.was_read(i)))
+            .map(|top| top.url.clone())
+            .collect()
+    }
+}
+
+/// Lists remote items as virtual files: each one, and everything under a folder. Folder links
+/// are not followed (they may loop); names too long for a descriptor are left out. Background
+/// thread.
+pub(crate) fn list_virtual(remotes: &Remotes, sources: &[PathBuf]) -> Result<Listing, RemoteError> {
+    let mut listing = Listing::default();
+    let mut taken = HashSet::new();
+    for source in sources {
+        let url = remote(source).ok_or(RemoteError::NotFound)?;
+        let entry = remotes.stat(&url)?;
+        let name = free_name(
+            &arke_remote::hub::local_name(&entry.name),
+            entry.is_dir_like(),
+            &taken,
+        );
+        taken.insert(name.to_lowercase());
+        let start = listing.items.len();
+        let whole = list_tree(remotes, &url, &entry, name, &mut listing.items)?;
+        let range = start..listing.items.len();
+        listing.tops.push(Top { url, range, whole });
+    }
+    listing.read = listing
+        .items
+        .iter()
+        .map(|item| std::sync::atomic::AtomicBool::new(item.is_dir()))
+        .collect();
+    Ok(listing)
+}
+
+/// Adds `entry` as `rel`, and what is in it; whether nothing was left out.
+fn list_tree(
+    remotes: &Remotes,
+    url: &RemoteUrl,
+    entry: &Entry,
+    rel: String,
+    out: &mut Vec<VirtualItem>,
+) -> Result<bool, RemoteError> {
+    if rel.encode_utf16().count() > MAX_VIRTUAL_NAME {
+        log::warn!("not handed to another program, the name is too long: {rel}");
+        return Ok(false);
+    }
+    match entry.kind {
+        EntryKind::Dir => {
+            let mut whole = true;
+            let mut taken = HashSet::new();
+            out.push(VirtualItem {
+                rel: rel.clone(),
+                url: None,
+                size: None,
+                modified: entry.modified,
+            });
+            for child in remotes.list(url)? {
+                let name = free_name(
+                    &arke_remote::hub::local_name(&child.name),
+                    child.is_dir_like(),
+                    &taken,
+                );
+                taken.insert(name.to_lowercase());
+                let child_url = url.join(&child.name);
+                whole &= list_tree(remotes, &child_url, &child, format!("{rel}\\{name}"), out)?;
+            }
+            Ok(whole)
+        }
+        // A folder link on the server is not followed (it may loop).
+        EntryKind::Link { is_dir: true } => Ok(false),
+        EntryKind::File | EntryKind::Link { is_dir: false } => {
+            out.push(VirtualItem {
+                rel,
+                url: Some(url.clone()),
+                size: (entry.kind == EntryKind::File).then_some(entry.size),
+                modified: entry.modified,
+            });
+            Ok(true)
+        }
+    }
+}
+
+/// Remote items copied, cut or dragged to other programs as virtual files (#529): listed when a
+/// program first asks what they are, read from the server only as it reads their bytes.
+pub(crate) struct RemoteItems {
+    pub(crate) remotes: Arc<Remotes>,
+    /// The items given (remote paths), in order.
+    pub(crate) sources: Vec<PathBuf>,
+    /// Cut: a program that moves them may have the originals deleted.
+    pub(crate) cut: bool,
+    listing: Mutex<Option<Arc<Listing>>>,
+}
+
+impl RemoteItems {
+    pub(crate) fn new(remotes: Arc<Remotes>, sources: Vec<PathBuf>, cut: bool) -> Arc<Self> {
+        Arc::new(Self {
+            remotes,
+            sources,
+            cut,
+            listing: Mutex::new(None),
+        })
+    }
+
+    /// The listing, made from the server on the first call (one caller lists, the others wait
+    /// for it). Background thread.
+    pub(crate) fn listing(&self) -> Result<Arc<Listing>, RemoteError> {
+        let mut slot = self.listing.lock();
+        if let Some(listing) = &*slot {
+            return Ok(Arc::clone(listing));
+        }
+        let listing = Arc::new(list_virtual(&self.remotes, &self.sources)?);
+        *slot = Some(Arc::clone(&listing));
+        Ok(listing)
+    }
+
+    /// The listing if it is made already; never waits.
+    pub(crate) fn listed(&self) -> Option<Arc<Listing>> {
+        self.listing.try_lock().and_then(|slot| slot.clone())
+    }
 }
 
 /// A fresh folder under the cache for one staging (clipboard, drag out, copy between servers).
@@ -455,9 +639,18 @@ pub(crate) fn test_remotes_with(
 pub(crate) struct RemoteShell {
     inner: Arc<dyn Shell>,
     remotes: Arc<Remotes>,
-    /// Remote items last cut to the clipboard (clipboard sequence number, originals): pasting
-    /// them inside Arke moves the originals, not the staged copies.
-    cut: Mutex<Option<(u32, Vec<PathBuf>)>>,
+    /// Remote items last copied or cut to the clipboard.
+    clip: Mutex<Option<ClipRecord>>,
+}
+
+/// Remote items Arke put on the clipboard: pasted inside Arke, the originals are copied or moved
+/// straight from the server (with progress), whatever other programs are given.
+#[derive(Clone)]
+struct ClipRecord {
+    /// The clipboard sequence number right after.
+    seq: u32,
+    paths: Vec<PathBuf>,
+    cut: bool,
 }
 
 impl RemoteShell {
@@ -465,8 +658,40 @@ impl RemoteShell {
         Self {
             inner,
             remotes,
-            cut: Mutex::new(None),
+            clip: Mutex::new(None),
         }
+    }
+
+    /// Remote items on the clipboard as virtual files, nothing downloaded (#529). `None` if they
+    /// can't be (some are local, or the system refused): then they are staged.
+    fn set_virtual(&self, files: &ClipboardFiles) -> Result<Option<u32>, ShellError> {
+        if !files.paths.iter().all(|p| remote(p).is_some()) {
+            return Ok(None);
+        }
+        let items = RemoteItems::new(Arc::clone(&self.remotes), files.paths.clone(), files.cut);
+        match self.inner.set_clipboard_remote(&items) {
+            Ok(seq) => Ok(Some(seq)),
+            // Staging would only download to find the clipboard still busy.
+            Err(ShellError::ClipboardBusy) => Err(ShellError::ClipboardBusy),
+            Err(err) => {
+                log::warn!("remote items not on the clipboard as virtual files: {err}");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Local copies on the clipboard, downloaded first (up to [`STAGE_MAX`]): what other
+    /// programs get when the items can't go there as virtual files.
+    fn set_staged(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
+        let staged = match stage_local_copies(&self.remotes, &files.paths, STAGE_MAX) {
+            Ok(staged) => staged,
+            Err(RemoteError::TooLarge) => return Err(ShellError::RemoteClipTooLarge),
+            Err(err) => return Err(err.into()),
+        };
+        self.inner.set_clipboard_files(&ClipboardFiles {
+            paths: staged,
+            cut: false,
+        })
     }
 
     fn touches_remote(op: &FileOp) -> bool {
@@ -751,11 +976,19 @@ impl Shell for RemoteShell {
         image: Option<&DragImage>,
         after_lost_press: bool,
     ) -> Result<DragOutEnd, ShellError> {
-        // Remote drags hand over staged local copies (see explorer_dnd), never URLs.
+        // Remote drags hand over virtual files (`drag_out_remote`), never URLs.
         if paths.iter().any(|p| remote(p).is_some()) {
             return Ok(DragOutEnd::Finished);
         }
         self.inner.drag_out(paths, image, after_lost_press)
+    }
+    fn drag_out_remote(
+        &self,
+        items: &Arc<RemoteItems>,
+        image: Option<&DragImage>,
+        after_lost_press: bool,
+    ) -> Result<DragOutEnd, ShellError> {
+        self.inner.drag_out_remote(items, image, after_lost_press)
     }
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         self.inner.covered_at_cursor(owner)
@@ -804,27 +1037,41 @@ impl Shell for RemoteShell {
     }
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
         if !files.paths.iter().any(|p| remote(p).is_some()) {
-            *self.cut.lock() = None;
+            *self.clip.lock() = None;
             return self.inner.set_clipboard_files(files);
         }
-        // Other programs get local copies; a cut stays a move of the originals inside Arke.
-        let staged = stage_local_copies(&self.remotes, &files.paths, STAGE_MAX)?;
-        let seq = self.inner.set_clipboard_files(&ClipboardFiles {
-            paths: staged,
-            cut: false,
-        })?;
-        *self.cut.lock() = files.cut.then(|| (seq, files.paths.clone()));
+        // Other programs get virtual files, read from the server as they paste, or else local
+        // copies; inside Arke, a paste transfers the originals.
+        let seq = match self.set_virtual(files)? {
+            Some(seq) => seq,
+            None => self.set_staged(files)?,
+        };
+        *self.clip.lock() = Some(ClipRecord {
+            seq,
+            paths: files.paths.clone(),
+            cut: files.cut,
+        });
         Ok(seq)
     }
     fn clipboard_files(&self) -> Result<Option<(ClipboardFiles, u32)>, ShellError> {
-        let found = self.inner.clipboard_files()?;
-        let cut = self.cut.lock().clone();
-        Ok(match (found, cut) {
-            (Some((_, seq)), Some((cut_seq, paths))) if seq == cut_seq => {
-                Some((ClipboardFiles { paths, cut: true }, seq))
-            }
-            (found, _) => found,
-        })
+        let record = self.clip.lock().clone();
+        if let Some(record) = record
+            && (self.inner.clipboard_seq() == record.seq
+                || self.inner.clipboard_is_remote(record.seq))
+        {
+            let files = ClipboardFiles {
+                paths: record.paths,
+                cut: record.cut,
+            };
+            return Ok(Some((files, record.seq)));
+        }
+        self.inner.clipboard_files()
+    }
+    fn set_clipboard_remote(&self, items: &Arc<RemoteItems>) -> Result<u32, ShellError> {
+        self.inner.set_clipboard_remote(items)
+    }
+    fn clipboard_is_remote(&self, seq: u32) -> bool {
+        self.inner.clipboard_is_remote(seq)
     }
     fn clipboard_virtual_files(
         &self,
@@ -1228,6 +1475,57 @@ mod tests {
         let copies = stage_local_copies(&remotes, &[photo], 1 << 20).unwrap();
         assert_eq!(std::fs::read(&copies[0]).unwrap(), b"jpeg bytes");
         assert_eq!(entries(&staged), 1);
+    }
+
+    /// Remote items are listed for other programs as each item and everything under a folder,
+    /// folders first, with free Windows names and the files' sizes; only items read in full
+    /// (all under them) count as moved out (#529).
+    #[test]
+    fn remote_items_are_listed_with_relative_names_folders_and_sizes() {
+        let (_devices, remotes, _cache) = phone();
+        let dcim = PathBuf::from("mtp://phone/Internal/DCIM");
+        let listing = list_virtual(&remotes, &[dcim.clone(), dcim.join("a.jpg")]).unwrap();
+        let listed: Vec<(&str, bool, Option<u64>)> = listing
+            .items
+            .iter()
+            .map(|i| (i.rel.as_str(), i.is_dir(), i.size))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("DCIM", true, None),
+                (r"DCIM\a.jpg", false, Some(10)),
+                (r"DCIM\b.jpg", false, Some(15)),
+                ("a.jpg", false, Some(10)),
+            ]
+        );
+        assert_eq!(
+            listing.items[1].url,
+            RemoteUrl::from_path(&dcim.join("a.jpg"))
+        );
+        assert_eq!(listing.tops.len(), 2);
+        assert_eq!(listing.tops[0].range, 0..3);
+        assert!(listing.tops.iter().all(|top| top.whole));
+
+        assert!(listing.fully_read().is_empty());
+        listing.mark_read(1);
+        listing.mark_read(3);
+        assert_eq!(
+            listing.fully_read(),
+            [listing.tops[1].url.clone()],
+            "the folder isn't read in full yet"
+        );
+        listing.mark_read(2);
+        assert_eq!(listing.fully_read().len(), 2);
+
+        // The same name twice gets a free one, as a paste would.
+        let twice = list_virtual(&remotes, &[dcim.clone(), dcim]).unwrap();
+        let tops: Vec<&str> = twice
+            .tops
+            .iter()
+            .map(|top| twice.items[top.range.start].rel.as_str())
+            .collect();
+        assert_eq!(tops, ["DCIM", "DCIM (2)"]);
     }
 
     /// Sets all of a file's times to `when`.

@@ -426,7 +426,7 @@ impl Remotes {
         sink: &dyn TransferSink,
     ) -> RemoteResult<()> {
         let mut out = std::fs::File::create(dest)?;
-        let result = self.download_into(url, &mut out, sink);
+        let result = self.download_to(url, &mut out, sink);
         drop(out);
         if result.is_err() {
             let _ = std::fs::remove_file(dest);
@@ -434,10 +434,12 @@ impl Remotes {
         result
     }
 
-    fn download_into(
+    /// Streams one file into `out`, in order, as it arrives. Stops when `sink` says cancel or
+    /// `out` fails (its error is returned). Nothing is cached.
+    pub fn download_to(
         &self,
         url: &RemoteUrl,
-        out: &mut std::fs::File,
+        out: &mut dyn std::io::Write,
         sink: &dyn TransferSink,
     ) -> RemoteResult<()> {
         if url.scheme.is_mtp() {

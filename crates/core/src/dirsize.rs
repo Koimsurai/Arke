@@ -268,15 +268,16 @@ pub struct Space {
 impl Space {
     /// The `n` biggest folders directly inside, biggest first; empty ones are left out.
     pub fn largest(&self, n: usize) -> Vec<(PathBuf, u64)> {
-        let mut all: Vec<(PathBuf, u64)> = self
+        // Sorted by reference: a folder with thousands of subfolders is asked about on every
+        // frame, and only the `n` that stay are copied.
+        let mut all: Vec<&(PathBuf, u64)> = self
             .children
             .iter()
             .filter(|(_, bytes)| *bytes > 0)
-            .cloned()
             .collect();
         all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         all.truncate(n);
-        all
+        all.into_iter().cloned().collect()
     }
 }
 

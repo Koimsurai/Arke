@@ -26,9 +26,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arke_core::filetype::FileKind;
 use arke_core::{DeltaOutcome, DirModel, DirService, Entry, IoEvent, NavKind, service};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, Entity, ExternalPaths, MouseButton, MouseDownEvent,
-    Pixels, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px,
-    svg, uniform_list,
+    AnyElement, ClickEvent, Context, Div, Entity, ExternalPaths, MouseButton, MouseDownEvent,
+    Pixels, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px, svg,
+    uniform_list,
 };
 use rust_i18n::t;
 
@@ -41,7 +41,7 @@ use crate::assets::Icon;
 use crate::media::MediaKey;
 use crate::prefs::ViewColumn;
 use crate::press_guard::is_double_click;
-use crate::settings::{Density, SettingsStore};
+use crate::settings::Density;
 use crate::shell::{Place, PlaceKind};
 use crate::theme;
 
@@ -433,7 +433,6 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let drives: Vec<(PathBuf, SharedString, Icon, bool)> = {
-            let names = &SettingsStore::global(cx).read(cx).settings.place_names;
             let here = self.current_path();
             self.column_drives()
                 .enumerate()
@@ -445,7 +444,7 @@ impl Explorer {
                         Icon::Drive
                     };
                     let current = here.is_some_and(|h| super::same_folder(&place.path, h));
-                    let label = crate::place_names::place_label(names, place);
+                    let label = crate::place_names::place_label(&self.place_names, place);
                     (place.path.clone(), label.into(), icon, current)
                 })
                 .collect()
@@ -549,7 +548,7 @@ impl Explorer {
     }
 
     /// The names the parent column shows, for fitting its width.
-    fn parent_shown_names(&self, cx: &App) -> Vec<SharedString> {
+    fn parent_shown_names(&self) -> Vec<SharedString> {
         let Some(column) = &self.parent_column else {
             return Vec::new();
         };
@@ -560,12 +559,10 @@ impl Explorer {
                 .iter()
                 .map(|e| super::view::shown_name(e, self.show_extensions))
                 .collect(),
-            None => {
-                let names = &SettingsStore::global(cx).read(cx).settings.place_names;
-                self.column_drives()
-                    .map(|p| crate::place_names::place_label(names, p).into())
-                    .collect()
-            }
+            None => self
+                .column_drives()
+                .map(|p| crate::place_names::place_label(&self.place_names, p).into())
+                .collect(),
         }
     }
 
@@ -630,7 +627,7 @@ impl Explorer {
     ) {
         let show_ext = self.show_extensions;
         let mut names: Vec<SharedString> = match col {
-            ViewColumn::Parent => self.parent_shown_names(cx),
+            ViewColumn::Parent => self.parent_shown_names(),
             ViewColumn::Current => self.view().map_or_else(Vec::new, |entries| {
                 entries
                     .iter()

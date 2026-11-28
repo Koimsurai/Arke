@@ -762,13 +762,16 @@ pub(crate) struct Explorer {
     pub(crate) show_checkboxes: bool,
     /// Column widths were dragged but not saved yet (saved on release).
     pub(crate) column_resized: bool,
+    /// Pressed on a Details column divider: which column, where (x), and its width then.
+    column_drag: Option<(crate::prefs::Col, Pixels, Pixels)>,
     /// The preview pane's edge was dragged (or reset) but the width is not saved yet.
     pub(crate) preview_resized: bool,
-    /// Pressed on the preview pane's edge: where (x), and the pane's width then.
+    /// Pressed on the preview pane's edge: where (x), and the pane's width then (until released).
     preview_drag_start: Option<(Pixels, Pixels)>,
     /// A column view column was dragged but its width is not saved yet (saved on release).
     pub(crate) view_column_resized: Option<crate::prefs::ViewColumn>,
-    /// Pressed on a column view divider: which column, where (x), and the column's width then.
+    /// Pressed on a column view divider: which column, where (x), and the column's width then
+    /// (until released).
     view_column_drag: Option<(crate::prefs::ViewColumn, Pixels, Pixels)>,
     /// Where the symlinks and junctions in this folder point (Link target column).
     link_targets: details::LinkTargets,
@@ -1212,6 +1215,7 @@ impl Explorer {
             localized: localized_names::LocalizedNames::default(),
             show_checkboxes: settings.read(cx).settings.show_checkboxes,
             column_resized: false,
+            column_drag: None,
             preview_resized: false,
             preview_drag_start: None,
             view_column_resized: None,

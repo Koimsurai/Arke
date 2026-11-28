@@ -101,6 +101,7 @@ mod shelf;
 mod shell;
 mod shell_host;
 mod slider;
+mod splitter;
 mod spring;
 mod text_input;
 mod theme;

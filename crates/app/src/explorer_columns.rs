@@ -20,9 +20,8 @@ use std::sync::Arc;
 use arke_core::filetype::FileKind;
 use arke_core::{Entry, NavKind};
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, ExternalPaths, MouseButton, MouseDownEvent, Pixels,
-    ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px,
-    uniform_list,
+    AnyElement, ClickEvent, Context, Entity, ExternalPaths, MouseDownEvent, Pixels, ScrollStrategy,
+    SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 
 use super::view::listed_visual;
@@ -32,8 +31,8 @@ use super::{
 };
 use crate::media::MediaKey;
 use crate::prefs::ViewColumn;
-use crate::press_guard::is_double_click;
 use crate::settings::Density;
+use crate::splitter::{DragEnd, Splitter};
 use crate::theme;
 
 /// Default width of the left (parent) column
@@ -43,10 +42,6 @@ pub(super) fn parent_w() -> gpui::Pixels {
 /// Fitting measures at most this many names, the longest by character count: enough to find the
 /// widest one without shaping every name of a huge folder.
 const FIT_CANDIDATES: usize = 256;
-
-/// The parent column's divider being dragged, in this pane.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DraggedParentEdge(gpui::EntityId);
 
 pub(crate) struct ParentColumn {
     pub(crate) dir: PathBuf,
@@ -448,61 +443,47 @@ impl Explorer {
     /// left padding it covers, so rows on either side keep their clicks): drag to size the
     /// column, double-click to fit it to its names.
     pub(super) fn render_parent_divider(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let dragging = self.view_column_resized == Some(ViewColumn::Parent) && cx.has_active_drag();
-        div()
-            .id("parent-column-resize")
+        let hit = div()
             .absolute()
             .top_0()
             .bottom_0()
             .left(self.parent_column_drawn() - theme::s_4())
             .w(theme::s_8())
             // Presses stay here: the list under it would clear the selection.
-            .occlude()
-            .cursor_col_resize()
-            .group("parent-column-resize")
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(theme::s_4() - px(1.))
-                    .w(px(2.))
-                    .when(dragging, |d| d.bg(theme::signal()))
-                    .when(!dragging, |d| {
-                        d.group_hover("parent-column-resize", |s| s.bg(theme::signal_line()))
-                    }),
-            )
+            .occlude();
+        let line = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(theme::s_4() - px(1.))
+            .w(px(2.));
+        let dragging = matches!(self.view_column_drag, Some((ViewColumn::Parent, ..)));
+        Splitter::new("parent-column-resize", gpui::CursorStyle::ResizeColumn)
+            .dragging(dragging)
             // Like the preview's edge: the drag moves the divider by as much as the cursor moved
-            // since the press, so it neither jumps nor lags by the drag threshold.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, _, _| {
-                    this.view_column_drag =
-                        Some((ViewColumn::Parent, e.position.x, this.parent_column_drawn()));
-                }),
-            )
-            .on_drag(DraggedParentEdge(cx.entity_id()), |_, _, _, cx| {
-                cx.new(|_| super::details::ColumnDragView)
-            })
-            .on_drag_move(cx.listener(
-                |this, e: &gpui::DragMoveEvent<DraggedParentEdge>, _, cx| {
-                    if e.drag(cx).0 != cx.entity_id() {
-                        return;
-                    }
-                    if let Some((ViewColumn::Parent, from, start)) = this.view_column_drag {
-                        this.drag_view_column(
-                            ViewColumn::Parent,
-                            start + e.event.position.x - from,
-                            cx,
-                        );
-                    }
-                },
-            ))
-            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                if is_double_click(e.click_count()) {
-                    this.fit_view_column(ViewColumn::Parent, window, cx);
+            // since the press, so it neither jumps nor lags.
+            .on_start(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                this.activate_on_press(cx);
+                this.view_column_drag =
+                    Some((ViewColumn::Parent, e.position.x, this.parent_column_drawn()));
+            }))
+            .on_double_click(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                this.activate_on_press(cx);
+                this.fit_view_column(ViewColumn::Parent, window, cx);
+            }))
+            .on_drag(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
+                if let Some((ViewColumn::Parent, from, start)) = this.view_column_drag {
+                    this.drag_view_column(ViewColumn::Parent, start + e.position.x - from, cx);
                 }
             }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| {
+                if matches!(this.view_column_drag, Some((ViewColumn::Parent, ..))) {
+                    this.view_column_drag = None;
+                    this.save_view_column_widths(cx);
+                    cx.notify();
+                }
+            }))
+            .render(hit, line)
     }
 }
 

@@ -64,8 +64,8 @@ mod pdf_pane;
 #[path = "explorer_text.rs"]
 mod text;
 use crate::a11y::A11yExt as _;
-use crate::press_guard::is_double_click;
 use crate::shell::Shell;
+use crate::splitter::{DragEnd, Splitter};
 use crate::theme::{self, UiFont as _};
 pub(crate) use pdf_pane::RenderedPage;
 #[cfg(test)]
@@ -2193,16 +2193,11 @@ impl Explorer {
         in_gap: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let dragging = (self.preview_resized
-            || self.view_column_resized == Some(crate::prefs::ViewColumn::Current))
-            && cx.has_active_drag();
-        let edge = DraggedPreviewEdge(cx.entity_id());
         let gap = super::layout::shared_gap();
         // Centered on the gap, and no narrower than the pane's own edge when the gap is thin
         // (compact density): the rest reaches over the preview's edge.
-        let hit = gap.max(theme::s_8());
-        div()
-            .id("preview-resize")
+        let hit_w = gap.max(theme::s_8());
+        let hit = div()
             .absolute()
             .top_0()
             .bottom_0()
@@ -2211,40 +2206,30 @@ impl Explorer {
             .when(!in_gap, |d| d.left_0().w(theme::s_8()))
             // The gap lies over the right pane's box: keep the press from reaching that pane,
             // which would make it the active side and hand the preview (and this drag) over.
-            .when(in_gap, |d| d.left(-(gap + hit) / 2.).w(hit).occlude())
-            .cursor_col_resize()
-            .group("preview-resize")
-            .child(
-                div()
-                    .absolute()
-                    .top(if in_gap { theme::r_paper() } else { px(0.) })
-                    .bottom(if in_gap { theme::r_paper() } else { px(0.) })
-                    .left(if in_gap { hit / 2. - px(1.) } else { px(0.) })
-                    .w(px(2.))
-                    .when(in_gap, |d| d.rounded(theme::R_FULL))
-                    .when(dragging, |d| d.bg(theme::signal()))
-                    .when(!dragging, |d| {
-                        d.group_hover("preview-resize", |s| s.bg(theme::signal_line()))
-                    }),
-            )
+            .when(in_gap, |d| d.left(-(gap + hit_w) / 2.).w(hit_w).occlude());
+        let line = div()
+            .absolute()
+            .top(if in_gap { theme::r_paper() } else { px(0.) })
+            .bottom(if in_gap { theme::r_paper() } else { px(0.) })
+            .left(if in_gap { hit_w / 2. - px(1.) } else { px(0.) })
+            .w(px(2.))
+            .when(in_gap, |d| d.rounded(theme::R_FULL));
+        Splitter::new("preview-resize", gpui::CursorStyle::ResizeColumn)
+            .round(in_gap)
+            .dragging(self.preview_drag_start.is_some())
             // Where the press started and the width then: the drag moves the edge by as much as
-            // the cursor moved, so it neither jumps to the cursor nor lags by the drag threshold.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, e: &MouseDownEvent, _, _| {
-                    this.preview_drag_start = Some((e.position.x, this.preview_w()));
-                    // In the column view this edge is the current folder column's divider.
-                    this.view_column_drag = (this.columns_active() && !in_gap).then(|| {
-                        let current = crate::prefs::ViewColumn::Current;
-                        (current, e.position.x, this.view_column_shown_width(current))
-                    });
-                }),
-            )
-            .on_drag(edge, |_, _, _, cx| cx.new(|_| super::details::ColumnDragView))
-            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                if !is_double_click(e.click_count()) {
-                    return;
-                }
+            // the cursor moved, so it neither jumps to the cursor nor lags behind it.
+            .on_start(cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                this.pressed_preview(window, cx);
+                this.preview_drag_start = Some((e.position.x, this.preview_w()));
+                // In the column view this edge is the current folder column's divider.
+                this.view_column_drag = (this.columns_active() && !in_gap).then(|| {
+                    let current = crate::prefs::ViewColumn::Current;
+                    (current, e.position.x, this.view_column_shown_width(current))
+                });
+            }))
+            .on_double_click(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                this.pressed_preview(window, cx);
                 if this.columns_active() && !in_gap {
                     this.fit_view_column(crate::prefs::ViewColumn::Current, window, cx);
                 } else {
@@ -2253,22 +2238,33 @@ impl Explorer {
                     this.save_preview_width(cx);
                 }
             }))
+            .on_drag(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                this.drag_preview_edge(e.position.x, cx);
+            }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| {
+                if this.preview_drag_start.take().is_some() {
+                    this.view_column_drag = None;
+                    this.save_view_column_widths(cx);
+                    this.save_preview_width(cx);
+                    cx.notify();
+                }
+            }))
+            .render(hit, line)
     }
 
-    /// The preview's edge moved during a drag. The preview is anchored to the right edge:
+    /// A press on the preview's dividers, which go no further: what a press anywhere in the
+    /// preview does (it leaves the path and filter boxes), and in split view the side becomes
+    /// the active one.
+    fn pressed_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_on_press(cx);
+        self.cancel_path_edit(window, cx);
+    }
+
+    /// The preview's edge moved during a drag, to `x`. The preview is anchored to the right edge:
     /// dragging left widens it by as much as the cursor moved since the press.
-    pub(super) fn drag_preview_edge(
-        &mut self,
-        e: &gpui::DragMoveEvent<DraggedPreviewEdge>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let pane = e.drag(cx).0;
-        if pane != cx.entity_id() {
-            return;
-        }
+    fn drag_preview_edge(&mut self, x: Pixels, cx: &mut Context<Self>) {
         if let Some((col, from, start)) = self.view_column_drag {
-            self.drag_view_column(col, start + e.event.position.x - from, cx);
+            self.drag_view_column(col, start + x - from, cx);
             return;
         }
         let Some((from, start)) = self.preview_drag_start else {
@@ -2280,7 +2276,7 @@ impl Explorer {
                 super::layout::preview_room(&self.fit_input(self.paper_width, self.screen.0.width))
             }
         };
-        let width = (start + from - e.event.position.x).clamp(super::layout::preview_min(), room);
+        let width = (start + from - x).clamp(super::layout::preview_min(), room);
         crate::prefs::set_preview_width(Some(width));
         self.preview_resized = true;
         cx.notify();
@@ -2322,76 +2318,64 @@ impl Explorer {
     }
 
     fn preview_split_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let dragging = self.pane_split.get().unsaved && cx.has_active_drag();
-        div()
-            .id("preview-split")
-            .absolute()
-            .left_0()
-            .right_0()
-            .top_0()
-            .h(theme::s_12())
-            .cursor_row_resize()
-            .group("preview-split")
-            .debug_selector(|| "preview-split".into())
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top_0()
-                    .h(px(2.))
-                    .when(dragging, |d| d.bg(theme::signal()))
-                    .when(!dragging, |d| {
-                        d.group_hover("preview-split", |s| s.bg(theme::signal_line()))
-                    }),
-            )
+        let hit = div().absolute().left_0().right_0().top_0().h(theme::s_12());
+        let line = div().absolute().left_0().right_0().top_0().h(px(2.));
+        Splitter::new("preview-split", gpui::CursorStyle::ResizeRow)
+            .dragging(self.pane_split.get().held)
             // Where the press landed relative to the frame's bottom edge: the drag then moves the
             // edge by as much as the cursor moved.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, _, _| {
-                    let mut split = this.pane_split.get();
-                    let bottom = split.top + this.pane_frame_h.get().unwrap_or_default();
-                    split.grab = e.position.y - bottom;
-                    this.pane_split.set(split);
-                }),
-            )
-            .on_drag(DraggedPreviewSplit(cx.entity_id()), |_, _, _, cx| {
-                cx.new(|_| super::details::ColumnDragView)
-            })
-            .on_drag_move(cx.listener(Self::drag_preview_split))
-            .on_click(cx.listener(|this, e: &ClickEvent, _, cx| {
-                if !is_double_click(e.click_count()) {
-                    return;
-                }
+            .on_start(cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                this.pressed_preview(window, cx);
+                let mut split = this.pane_split.get();
+                let bottom = split.top + this.pane_frame_h.get().unwrap_or_default();
+                split.grab = e.position.y - bottom;
+                split.held = true;
+                this.pane_split.set(split);
+            }))
+            .on_double_click(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                this.pressed_preview(window, cx);
                 crate::prefs::set_preview_split(None);
                 let mut split = this.pane_split.get();
                 split.unsaved = true;
                 this.pane_split.set(split);
                 this.save_preview_split(cx);
             }))
+            .on_drag(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                this.drag_preview_split(e.position.y, cx);
+            }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| {
+                let mut split = this.pane_split.get();
+                if std::mem::take(&mut split.held) {
+                    this.pane_split.set(split);
+                    this.save_preview_split(cx);
+                    cx.notify();
+                }
+            }))
+            .render(hit, line)
     }
 
-    /// The boundary moved during a drag: the frame's bottom edge follows the cursor, kept as a
-    /// share of the pane's height within the limits in `prefs`.
-    fn drag_preview_split(
-        &mut self,
-        e: &gpui::DragMoveEvent<DraggedPreviewSplit>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if e.drag(cx).0 != cx.entity_id() {
-            return;
-        }
+    /// The boundary moved during a drag, to `y`: the frame's bottom edge follows the cursor, kept
+    /// as a share of the pane's height within the limits in `prefs`.
+    fn drag_preview_split(&mut self, y: Pixels, cx: &mut Context<Self>) {
         let mut split = self.pane_split.get();
-        if split.column <= px(0.) {
+        if !split.held || split.column <= px(0.) {
             return;
         }
-        let height = e.event.position.y - split.grab - split.top;
+        let height = y - split.grab - split.top;
         crate::prefs::set_preview_split(Some(f32::from(height) / f32::from(split.column)));
         split.unsaved = true;
         self.pane_split.set(split);
         cx.notify();
+    }
+
+    /// Tests: whether a divider of this pane (a Details column's, the column view's, the
+    /// preview's edge or its boundary) is being dragged.
+    #[cfg(test)]
+    pub(crate) fn divider_drag_for_test(&self) -> bool {
+        self.column_drag.is_some()
+            || self.view_column_drag.is_some()
+            || self.preview_drag_start.is_some()
+            || self.pane_split.get().held
     }
 
     /// After dragging the boundary (or resetting it): save the share to settings (all windows).
@@ -2462,13 +2446,6 @@ impl Explorer {
         reason = "Layouts for each kind (no selection, archive, folder, other) are kept together for easy comparison"
     )]
     pub(super) fn preview_column(&self, pane: gpui::Div, cx: &mut Context<Self>) -> AnyElement {
-        // The boundary between the content and the details was released: save its share (app-wide).
-        if self.pane_split.get().unsaved && !cx.has_active_drag() {
-            let this = cx.entity().downgrade();
-            cx.defer(move |cx| {
-                let _ = this.update(cx, Self::save_preview_split);
-            });
-        }
         // Several selected: previewing the cursor item means little, show a summary instead.
         if self.selection.len() > 1 && !self.search_mode {
             return self.selection_summary(pane);
@@ -3603,15 +3580,6 @@ const PDF_ZOOM_SIDE: f32 = 4096.;
 /// Preview pane frame ratio: pane width minus 32 padding, to height
 const PANE_IMAGE_RATIO: f32 = 268. / 200.;
 
-/// The preview pane's left edge being dragged, in this pane (in split view both panes see the
-/// drag; only the one it started in resizes).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DraggedPreviewEdge(pub(super) gpui::EntityId);
-
-/// The boundary between the preview content and the details below it being dragged, in this pane.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DraggedPreviewSplit(pub(super) gpui::EntityId);
-
 /// Where the side preview was drawn at the last layout, and the drag of the boundary between its
 /// content frame and its details. Measured while drawing and read by the drag, which works from
 /// the cursor's position, so it is a `Cell` shared with the drawing callbacks.
@@ -3626,6 +3594,8 @@ pub(crate) struct PaneSplit {
     grab: Pixels,
     /// Dragged or reset but not saved yet (saved when the mouse is released).
     unsaved: bool,
+    /// Pressed on the boundary and not released yet: a drag is under way.
+    held: bool,
 }
 /// Pane frame for PDFs: height to width, a little squatter than A4 so details still fit
 const PDF_FRAME_RATIO: f32 = 1.3;

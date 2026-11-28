@@ -344,13 +344,12 @@ impl Workspace {
                 Some((e.display_path()?.to_path_buf(), e.history.clone()))
             })
             .collect();
-        let home_tab = self.home_page.as_ref().and_then(|p| self.tab_of(&p.owner));
         (!panes.is_empty()).then(|| MovedTab {
             active_pane: tab.active_pane.min(panes.len() - 1),
             ratio: tab.ratio,
             pinned: tab.pinned,
             synced: tab.synced && panes.len() > 1,
-            home: home_tab == Some(ix),
+            home: self.tab_has_home(ix),
             panes,
         })
     }
@@ -431,7 +430,7 @@ impl Workspace {
             // Its history already holds the page as the place it was left from.
             self.active_view()
                 .update(cx, |e, _| e.set_page(Some(arke_core::NavPage::Home)));
-            self.open_home_as(false, false, window, cx);
+            self.open_home_fresh(false, false, window, cx);
         }
         self.focus_active(window, cx);
         cx.notify();

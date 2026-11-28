@@ -381,9 +381,14 @@ impl Explorer {
             .display_path()
             .and_then(arke_core::path::parent)
             .is_some();
+        // How the row fits (#388, #474, #528), decided once: the path bar collapses levels only
+        // when the row says so.
+        let selecting = !self.search_mode && !self.selection.is_empty();
+        let fold = self.row_layout(selecting, window, cx);
+        self.row_fold.row = Some(fold);
         // A narrow path bar (as laid out on the last frame) keeps only the current folder.
         let slot = self.path_slot.get();
-        let compact = slot > px(0.) && slot < path_compact_below();
+        let compact = fold.collapse && slot > px(0.) && slot < path_compact_below();
         // The path bar is a stop of its own: built before the row's buttons are recorded.
         let path = self.render_path_slot(compact, window, cx);
         // The row's buttons are recorded as they are built (see `explorer_toolbar.rs`).
@@ -400,12 +405,13 @@ impl Explorer {
         )
         .into_any_element();
         let chip = self.render_filter_chip(cx);
-        let info = if !self.search_mode && !self.selection.is_empty() {
-            self.render_selection_actions(self.compact_bar(), window, cx)
-        } else {
-            self.render_folder_actions(self.compact_bar(), cx)
+        let info = match fold.selection {
+            Some(layout) if selecting => self.render_selection_actions(layout, cx),
+            _ => self.render_folder_actions(self.compact_bar(), !fold.count_hidden(), cx),
         };
-        let view = self.render_view_controls(window, cx).into_any_element();
+        let view = self
+            .render_view_controls(&fold, window, cx)
+            .into_any_element();
         if self.toolbar.end() {
             window.request_animation_frame();
         }

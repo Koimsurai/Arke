@@ -3,7 +3,6 @@
 //! passwords typed this session, and a download cache for previews and opened files.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -426,7 +425,7 @@ impl Remotes {
         sink: &dyn TransferSink,
     ) -> RemoteResult<()> {
         let mut out = std::fs::File::create(dest)?;
-        let result = self.download_into(url, &mut out, sink);
+        let result = self.download_to(url, &mut out, sink);
         drop(out);
         if result.is_err() {
             let _ = std::fs::remove_file(dest);
@@ -434,10 +433,12 @@ impl Remotes {
         result
     }
 
-    fn download_into(
+    /// Streams one file into `out`, in order, as it arrives. Stops when `sink` says cancel or
+    /// `out` fails (its error is returned). Nothing is cached.
+    pub fn download_to(
         &self,
         url: &RemoteUrl,
-        out: &mut std::fs::File,
+        out: &mut dyn std::io::Write,
         sink: &dyn TransferSink,
     ) -> RemoteResult<()> {
         if url.scheme.is_mtp() {
@@ -554,6 +555,7 @@ impl Remotes {
             && meta.len() == entry.size
             && same_time(meta.modified().ok(), entry.modified)
         {
+            mark_used(&local);
             return Ok(local);
         }
         let part = local.with_extension("arke-part");
@@ -582,6 +584,14 @@ impl Remotes {
     /// Whether this server speaks WebDAV.
     pub const fn is_dav(url: &RemoteUrl) -> bool {
         matches!(url.scheme, Scheme::Dav | Scheme::Davs)
+    }
+}
+
+/// Sets a cached copy's last access time to now: the app prunes the cache by when a copy was
+/// last used (#529), and Windows doesn't always keep that time itself. Best effort.
+fn mark_used(path: &Path) {
+    if let Ok(file) = std::fs::File::options().write(true).open(path) {
+        let _ = file.set_times(std::fs::FileTimes::new().set_accessed(SystemTime::now()));
     }
 }
 

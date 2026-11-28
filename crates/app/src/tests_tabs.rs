@@ -3124,8 +3124,8 @@ fn ctrl_t_opens_home_again_and_again(cx: &mut TestAppContext) {
                 .iter()
                 .filter(|t| **t == home)
                 .count(),
-            1,
-            "one Home page; the others show their folder"
+            3,
+            "each new tab has its own Home; the first tab keeps its folder"
         );
     });
 }
@@ -3538,5 +3538,148 @@ fn a_tab_tooltip_is_the_full_path(cx: &mut TestAppContext) {
     ws.update(cx, |ws, cx| {
         let tip = ws.tab_tip(ws.active, cx);
         assert_eq!(tip, Some(rust_i18n::t!("home.title").into_owned()));
+    });
+}
+
+/// #530: "+" or Ctrl+T set to Home while the tab shows Home: both tabs show Home, the first one
+/// doesn't fall back to the folder under it.
+#[gpui::test]
+fn a_new_home_tab_leaves_the_home_tab_it_came_from(cx: &mut TestAppContext) {
+    use crate::settings::NewTabAction;
+    let (ws, cx) = setup_workspace(cx, folders(&[r"C:\a"]), r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "load", loaded(r"C:\a"));
+    change(cx, |s| s.new_tab = NewTabAction::Home);
+    let home = t!("home.title").into_owned();
+    ws.update_in(cx, Workspace::open_start_home_for_test);
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.active, 1);
+        assert_eq!(ws.tab_titles_for_test(cx), [home.clone(), home.clone()]);
+    });
+
+    // Switching between them keeps both on Home.
+    for ix in [0, 1, 0] {
+        ws.update_in(cx, |ws, window, cx| ws.activate(ix, window, cx));
+        cx.run_until_parked();
+        ws.update(cx, |ws, cx| {
+            assert_eq!(ws.shown_page_for_test(), Some(home.clone()));
+            assert_eq!(ws.tab_titles_for_test(cx), [home.clone(), home.clone()]);
+        });
+    }
+
+    // Closing one leaves the other on Home.
+    ws.update_in(cx, |ws, window, cx| ws.close_tab(1, window, cx));
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_titles_for_test(cx), std::slice::from_ref(&home));
+        assert_eq!(ws.shown_page_for_test(), Some(home.clone()));
+    });
+}
+
+/// #530: each Home tab has its own history. Back in one tab leaves the other on Home.
+#[gpui::test]
+fn back_on_one_home_tab_does_not_touch_the_other(cx: &mut TestAppContext) {
+    use crate::settings::NewTabAction;
+    let (ws, cx) = setup_workspace(cx, folders(&[r"C:\a", r"C:\b"]), r"C:\a");
+    let first = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &first, "a", loaded(r"C:\a"));
+    go(&first, cx, r"C:\b");
+    change(cx, |s| s.new_tab = NewTabAction::Home);
+    let home = t!("home.title").into_owned();
+    // Home over b: its history has Home after b. A second tab starts on Home.
+    ws.update_in(cx, |ws, window, cx| {
+        ws.open_home_for_test(false, window, cx);
+    });
+    cx.simulate_keystrokes("ctrl-t");
+    cx.run_until_parked();
+    let second = ws.update(cx, |ws, _| ws.active_view().clone());
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_titles_for_test(cx), [home.clone(), home.clone()]);
+    });
+    assert!(!second.update(cx, |e, _| e.can_go(true)), "Home starts it");
+
+    // The second tab has nothing before Home: Back does nothing, the first tab stays on Home.
+    cx.update(|window, cx| {
+        second.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.tab_titles_for_test(cx), [home.clone(), home.clone()]);
+    });
+
+    // Back in the first tab goes to b; the second tab is still on Home.
+    ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+    cx.update(|window, cx| {
+        first.update(cx, |e, cx| e.go_back(&crate::explorer::GoBack, window, cx));
+    });
+    cx.run_until_parked();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(ws.shown_page_for_test(), None);
+        assert_eq!(ws.tab_titles_for_test(cx), ["b".to_owned(), home.clone()]);
+    });
+    ws.update_in(cx, |ws, window, cx| ws.activate(1, window, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        ws.update(cx, |ws, _| ws.shown_page_for_test()),
+        Some(home.clone())
+    );
+}
+
+/// #530: a session with several Home tabs brings each of them back, and saves them again.
+#[gpui::test]
+fn session_restore_brings_back_several_home_tabs(cx: &mut TestAppContext) {
+    use crate::settings::{Session, SessionTab};
+    let fs = folders(&[r"C:\p", r"C:\q", r"C:\r"]);
+    arke_core::fs::mark_ui_thread();
+    rust_i18n::set_locale("en");
+    cx.executor().allow_parking();
+    let tab = |path: &str, home: bool| SessionTab {
+        panes: vec![p(path)],
+        active_pane: 0,
+        ratio: 0.5,
+        pinned: false,
+        synced: false,
+        home,
+    };
+    let session = Session {
+        workspace: None,
+        tabs: vec![tab(r"C:\p", true), tab(r"C:\q", true), tab(r"C:\r", false)],
+        active: 0,
+    };
+    let services = Services {
+        fs,
+        shell: Arc::new(FakeShell::default()),
+        remotes: crate::remote_shell::test_remotes(),
+    };
+    let (ws, cx) = cx.add_window_view(move |window, cx| {
+        Workspace::new(
+            services,
+            p(r"C:\p"),
+            false,
+            Some(session),
+            None,
+            Instant::now(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let home = t!("home.title").into_owned();
+    ws.update(cx, |ws, cx| {
+        assert_eq!(
+            ws.tab_titles_for_test(cx),
+            [home.clone(), home.clone(), "r".to_owned()]
+        );
+        let saved: Vec<bool> = ws
+            .session_snapshot(cx)
+            .tabs
+            .iter()
+            .map(|t| t.home)
+            .collect();
+        assert_eq!(saved, [true, true, false]);
     });
 }

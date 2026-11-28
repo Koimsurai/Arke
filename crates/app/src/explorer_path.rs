@@ -658,8 +658,9 @@ impl Explorer {
 
     /// The drawn width of each breadcrumb (with its leading ›), and of the "…" piece.
     fn crumb_widths(crumbs: &[(String, PathBuf)], window: &Window) -> (Vec<Pixels>, Pixels) {
+        // Laid out rounded up to whole pixels, as every text is.
         let text_w = |text: &str, size: Pixels, weight: gpui::FontWeight| {
-            super::top_bar::text_width(text, size, weight, window)
+            super::top_bar::text_width(text, size, weight, window).ceil()
         };
         let pad = theme::s_6() * 2.;
         let last = crumbs.len().saturating_sub(1);
@@ -771,6 +772,11 @@ impl Explorer {
         if compact && crumbs.len() > 1 {
             return Some(0..crumbs.len() - 1);
         }
+        // Whether levels collapse at all is the pane row's call, made with everything else in the
+        // row (`Explorer::row_layout`); how many is the slot's.
+        if !self.row_fold.path_collapses() {
+            return None;
+        }
         let avail = slot - Self::path_chrome();
         let (widths, more) = Self::crumb_widths(crumbs, window);
         super::layout::collapse_crumbs(&widths, avail, more)
@@ -787,10 +793,12 @@ impl Explorer {
         let slot = Rc::clone(&self.path_slot);
         // The breadcrumbs collapse based on this width: when it changes, draw once more with the
         // new value (the slot's width doesn't depend on its content, so this settles at once).
+        // On the next frame: a refresh while drawing is dropped, which left the row a resize
+        // step behind (#528).
         let capture = canvas(
             move |b, window, _| {
                 if slot.replace(b.size.width) != b.size.width {
-                    window.refresh();
+                    window.on_next_frame(|window, _| window.refresh());
                 }
             },
             |_, (), _, _| {},
@@ -1010,10 +1018,15 @@ impl Explorer {
                 });
                 // Every level can shrink, so a name too long for the bar truncates instead of
                 // running over what's next to it; the current folder gives way last. The "…"
-                // never shrinks: squeezed, it would leave a stray ›.
+                // never shrinks: squeezed, it would leave a stray ›. Nor does the drive (the
+                // first level), which stays only while it fits whole (`collapse_crumbs`): the
+                // levels are decided from the bar's width on the frame before, so while the bar
+                // narrows (a resize, the preview pane sliding in) they come out a few pixels
+                // over, and the drive's short name, squeezed by them, blinked out (#538).
                 let shrink = match crumb {
                     None => 0.,
                     Some(_) if is_last => 1.,
+                    Some(_) if i == 0 => 0.,
                     Some(_) => CRUMBS_GIVE_WAY,
                 };
                 let piece = match crumb {
@@ -1259,6 +1272,7 @@ fn more_piece(i: usize, hidden: Vec<(String, PathBuf)>, cx: &mut Context<Explore
     let me = cx.entity().downgrade();
     div()
         .id(("crumb-more", i))
+        .debug_selector(|| "crumb-more".to_owned())
         .a11y_button(t!("a11y.more_folders"))
         .relative()
         .flex_none()

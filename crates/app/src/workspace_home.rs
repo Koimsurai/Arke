@@ -28,11 +28,27 @@ fn sidebar_favorites(places: &[crate::shell::Place], cx: &mut App) -> Vec<Favori
 }
 
 impl Workspace {
+    /// The Home page the active tab shows. Each tab that shows Home has its own page (#530).
+    fn home_here(&self) -> Option<&HomeView> {
+        self.home_pages.iter().find(|p| self.shows(&p.owner))
+    }
+
     /// Whether the active tab is showing Home.
     pub(super) fn home_open(&self) -> bool {
-        self.home_page
-            .as_ref()
-            .is_some_and(|p| self.shows(&p.owner))
+        self.home_here().is_some()
+    }
+
+    /// Removes the Home page the active tab shows and returns it.
+    pub(super) fn take_home_here(&mut self) -> Option<HomeView> {
+        let ix = self.home_pages.iter().position(|p| self.shows(&p.owner))?;
+        Some(self.home_pages.remove(ix))
+    }
+
+    /// Whether tab `ix` shows Home (one of its panes owns a Home page).
+    pub(super) fn tab_has_home(&self, ix: usize) -> bool {
+        self.home_pages
+            .iter()
+            .any(|p| self.tab_of(&p.owner) == Some(ix))
     }
 
     /// A new window opened for a folder another program (File Explorer) was asked to show: the
@@ -58,21 +74,20 @@ impl Workspace {
     /// Tab or Shift+Tab inside the Home page: on to its next or previous section. `false` when
     /// the page has none left, so the keyboard goes on to the rest of the window.
     pub(super) fn home_tab_section(&self, forward: bool, cx: &mut Context<Self>) -> bool {
-        self.home_page
-            .as_ref()
+        self.home_here()
             .is_some_and(|p| p.view.update(cx, |home, cx| home.tab_section(forward, cx)))
     }
 
     /// Tab or Shift+Tab brings the keyboard to the Home page: its first or last section.
     pub(super) fn home_enter(&self, forward: bool, cx: &mut Context<Self>) {
-        if let Some(p) = &self.home_page {
+        if let Some(p) = self.home_here() {
             p.view.update(cx, |home, cx| home.enter(forward, cx));
         }
     }
 
     pub(super) fn home_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
         use gpui::Focusable as _;
-        self.home_page.as_ref().map(|p| p.view.focus_handle(cx))
+        self.home_here().map(|p| p.view.focus_handle(cx))
     }
 
     /// Switches to the tab that already has it open, otherwise opens it in a new or the current tab.
@@ -81,11 +96,9 @@ impl Workspace {
     }
 
     /// Ctrl+T (and the New tab buttons) set to Home: always a new tab with Home, even when Home
-    /// is already open somewhere. There is one Home page, so one open elsewhere gives way and
-    /// its tab shows the folder under it (as when Back brings Home to another tab).
+    /// is already open somewhere. Every tab has its own Home page, so the others stay as they are.
     pub(super) fn open_home_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.home_page = None;
-        self.open_home_as(true, true, window, cx);
+        self.open_home_fresh(true, true, window, cx);
     }
 
     /// [`Self::open_home`]; `start`: Home is where the tab starts (a new window or tab, or Home
@@ -97,10 +110,24 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let existing = self.home_page.as_ref().map(|p| p.owner.clone());
+        let existing = self
+            .home_here()
+            .or_else(|| self.home_pages.first())
+            .map(|p| p.owner.clone());
         if self.go_to_page(existing.as_ref(), window, cx) {
             return;
         }
+        self.open_home_fresh(new_tab, start, window, cx);
+    }
+
+    /// Shows Home in a new tab or the active one, whether or not another tab shows it.
+    pub(super) fn open_home_fresh(
+        &mut self,
+        new_tab: bool,
+        start: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if new_tab {
             self.open_page_tab(window, cx);
         } else {
@@ -126,9 +153,12 @@ impl Workspace {
         let favorites = sidebar_favorites(&places, cx);
         let view = cx.new(|cx| HomePage::new(shell, places, favorites, shares, cx));
         let events = cx.subscribe_in(&view, window, Self::on_home_event);
-        self.home_page = Some(HomeView {
+        let owner = self.owner_here(new_tab, cx);
+        // One page per tab: a page this tab already has is replaced.
+        self.home_pages.retain(|p| p.owner.view != owner.view);
+        self.home_pages.push(HomeView {
             view,
-            owner: self.owner_here(new_tab, cx),
+            owner,
             _events: events,
         });
         self.focus_active(window, cx);
@@ -143,14 +173,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(page) = &self.home_page {
+        if let Some(page) = self.home_here() {
             let view = page.view.clone();
             self.on_home_event(&view, &HomeEvent::OpenFolder(path), window, cx);
         }
     }
 
     pub(super) fn close_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(page) = self.home_page.take() {
+        if let Some(page) = self.take_home_here() {
             self.dismiss_page(&page.owner, window, cx);
         }
     }
@@ -208,7 +238,7 @@ impl Workspace {
         }
         // Home yields and the folder opens in the same tab, even if the tab was created for Home.
         // Back from that folder brings Home back: the history has Home as the place it came from.
-        self.home_page = None;
+        self.take_home_here();
         self.focus_active(window, cx);
         let view = self.active_view().clone();
         match event {
@@ -265,7 +295,7 @@ impl Workspace {
             let at = self.active + 1;
             self.open_folder_tab(folder.clone(), at, true, window, cx);
         } else {
-            let own_tab = self.home_page.as_ref().is_some_and(|p| p.owner.own_tab());
+            let own_tab = self.home_here().is_some_and(|p| p.owner.own_tab());
             let Some(view) = self
                 .tab_showing(&folder, cx)
                 .filter(|&(tab, _)| own_tab && tab != self.active && Self::one_tab_per_folder(cx))
@@ -273,7 +303,7 @@ impl Workspace {
             else {
                 return false;
             };
-            if let Some(page) = self.home_page.take() {
+            if let Some(page) = self.take_home_here() {
                 self.dismiss_page(&page.owner, window, cx);
             }
             if let Some((tab, pane)) = self.locate(&view) {
@@ -287,16 +317,26 @@ impl Workspace {
         true
     }
 
-    /// Called before paint: closes Home once its tab is gone or has navigated elsewhere.
-    /// Also follows drive changes.
+    /// Called before paint: closes each Home once its tab is gone or has navigated elsewhere.
+    /// Also follows drive changes of the one shown (the others catch up when their tab shows).
     pub(super) fn home_follow_navigation(&mut self, cx: &mut App) {
-        let Some(page) = &self.home_page else {
-            return;
-        };
-        if !self.owner_alive(&page.owner, cx) {
-            self.home_page = None;
+        if self.home_pages.is_empty() {
             return;
         }
+        if self
+            .home_pages
+            .iter()
+            .any(|p| !self.owner_alive(&p.owner, cx))
+        {
+            let pages = std::mem::take(&mut self.home_pages);
+            self.home_pages = pages
+                .into_iter()
+                .filter(|p| self.owner_alive(&p.owner, cx))
+                .collect();
+        }
+        let Some(page) = self.home_here() else {
+            return;
+        };
         let places = self.active_view().read(cx).places.clone();
         let shares = SettingsStore::global(cx)
             .read(cx)
@@ -323,7 +363,7 @@ impl Workspace {
 
     /// Reloads on window activation; recent files may have changed.
     pub(super) fn home_refresh(&self, cx: &mut App) {
-        if let Some(page) = &self.home_page {
+        for page in &self.home_pages {
             page.view.update(cx, HomePage::reload);
         }
     }
@@ -331,7 +371,7 @@ impl Workspace {
     /// Recent files the Home page lists (`None` while loading or closed).
     #[cfg(test)]
     pub(crate) fn home_recent_for_test(&self, cx: &App) -> Option<Vec<std::path::PathBuf>> {
-        self.home_page.as_ref()?.view.read(cx).recent_for_test()
+        self.home_here()?.view.read(cx).recent_for_test()
     }
 
     /// The favorites Home lists, as `(path, name)` (`None` while closed).
@@ -340,26 +380,20 @@ impl Workspace {
         &self,
         cx: &App,
     ) -> Option<Vec<(std::path::PathBuf, String)>> {
-        Some(self.home_page.as_ref()?.view.read(cx).favorites_for_test())
+        Some(self.home_here()?.view.read(cx).favorites_for_test())
     }
 
     /// The card under Home's keyboard cursor (`None` while closed or with no ring and nothing
     /// picked).
     #[cfg(test)]
     pub(crate) fn home_cursor_for_test(&self, cx: &App) -> Option<String> {
-        self.home_page.as_ref()?.view.read(cx).cursor_for_test()
+        self.home_here()?.view.read(cx).cursor_for_test()
     }
 
     /// Whether Home draws its recent files section (tests).
     #[cfg(test)]
     pub(crate) fn home_recent_shown_for_test(&self, cx: &App) -> Option<bool> {
-        Some(
-            self.home_page
-                .as_ref()?
-                .view
-                .read(cx)
-                .recent_shown_for_test(),
-        )
+        Some(self.home_here()?.view.read(cx).recent_shown_for_test())
     }
 
     /// Sidebar Home button. Shows as selected while open; clicking again closes it. `None` while
@@ -425,7 +459,7 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let page = self.home_page.as_ref().filter(|p| self.shows(&p.owner))?;
+        let page = self.home_here()?;
         let top_bar = div()
             .h(theme::h_bar())
             .flex_none()

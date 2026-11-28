@@ -48,6 +48,8 @@ mod details;
 mod dnd;
 #[path = "explorer_filters.rs"]
 mod filters;
+#[path = "explorer_fold.rs"]
+mod fold;
 #[path = "explorer_folder_view.rs"]
 mod folder_view;
 #[path = "explorer_groups.rs"]
@@ -381,9 +383,11 @@ pub(crate) enum AppEvent {
         generation: u64,
         image: Option<Arc<gpui::RenderImage>>,
     },
-    ParentColumn {
-        dir: PathBuf,
-        entries: Arc<Vec<Entry>>,
+    /// A listing, change or failure for the column view's parent column (`column` tells it apart
+    /// from an earlier parent's).
+    ParentIo {
+        column: u64,
+        event: IoEvent,
     },
     /// Link target column: where these links in the folder listed as `generation` point (`None`
     /// when unreadable).
@@ -726,6 +730,40 @@ struct Filtered {
     entries: Arc<Vec<Entry>>,
 }
 
+/// What the pane row decided on this frame that others act on (#474).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RowFold {
+    /// The pane row's layout on this frame (`None` before the first).
+    row: Option<fold::RowLayout>,
+    /// The context menu being made was opened from "⋯": it gets what the row folded into it.
+    menu_from_more: bool,
+}
+
+impl RowFold {
+    /// The pane row folded Sort into "⋯".
+    #[cfg(test)]
+    pub(crate) fn sort_in_more(&self) -> bool {
+        self.row.is_some_and(|row| row.sort_folded())
+    }
+
+    /// The pane row folded synchronized browsing and compare into "⋯".
+    #[cfg(test)]
+    pub(crate) fn toggles_in_more(&self) -> bool {
+        self.row.is_some_and(|row| row.toggles_folded())
+    }
+
+    /// The path bar collapses levels: even with everything else folded it is short of its whole
+    /// width. The path bar takes this from the row's layout rather than deciding from its slot
+    /// on its own, so the two never disagree.
+    pub(crate) fn path_collapses(&self) -> bool {
+        self.row.is_some_and(|row| row.collapse)
+    }
+}
+
+/// Path slot, info and tools widths, the path's whole width, and the layout last logged for the
+/// pane row.
+type FoldLogged = (f32, f32, f32, f32, fold::RowLayout);
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "UI flags are independent (editing path, loading, show hidden, ...) and don't fit a state machine"
@@ -762,13 +800,16 @@ pub(crate) struct Explorer {
     pub(crate) show_checkboxes: bool,
     /// Column widths were dragged but not saved yet (saved on release).
     pub(crate) column_resized: bool,
+    /// Pressed on a Details column divider: which column, where (x), and its width then.
+    column_drag: Option<(crate::prefs::Col, Pixels, Pixels)>,
     /// The preview pane's edge was dragged (or reset) but the width is not saved yet.
     pub(crate) preview_resized: bool,
-    /// Pressed on the preview pane's edge: where (x), and the pane's width then.
+    /// Pressed on the preview pane's edge: where (x), and the pane's width then (until released).
     preview_drag_start: Option<(Pixels, Pixels)>,
     /// A column view column was dragged but its width is not saved yet (saved on release).
     pub(crate) view_column_resized: Option<crate::prefs::ViewColumn>,
-    /// Pressed on a column view divider: which column, where (x), and the column's width then.
+    /// Pressed on a column view divider: which column, where (x), and the column's width then
+    /// (until released).
     view_column_drag: Option<(crate::prefs::ViewColumn, Pixels, Pixels)>,
     /// Where the symlinks and junctions in this folder point (Link target column).
     link_targets: details::LinkTargets,
@@ -828,6 +869,16 @@ pub(crate) struct Explorer {
     /// Width of the pane row's item count or selection actions (last frame). With
     /// [`Self::path_slot`] it is the room the path bar and the selection share (#388).
     info_slot: path_bar::SlotWidth,
+    /// Width of the pane row's view tools that fold ("⋯", Sort, the view switcher or button) on
+    /// the last frame: part of the room the row shares out (#474).
+    tools_slot: path_bar::SlotWidth,
+    /// Width of what of the folder's info never folds (paste, new folder, the comparison's chip)
+    /// on the last frame: the item count beside it hides when the row is short (#474).
+    rest_slot: path_bar::SlotWidth,
+    /// What the pane row's layout was last logged with (`arke::fold` at debug level, #528).
+    fold_logged: std::cell::Cell<Option<FoldLogged>>,
+    /// Where the pane row's folded Sort went (#474).
+    pub(crate) row_fold: RowFold,
     /// The title row's search box width and the press-to-drag on the path bar.
     top_row: top_bar::TopRow,
     /// The pane row's buttons from the keyboard (F6).
@@ -1212,6 +1263,7 @@ impl Explorer {
             localized: localized_names::LocalizedNames::default(),
             show_checkboxes: settings.read(cx).settings.show_checkboxes,
             column_resized: false,
+            column_drag: None,
             preview_resized: false,
             preview_drag_start: None,
             view_column_resized: None,
@@ -1249,6 +1301,10 @@ impl Explorer {
             path_bounds: path_bar::PathBounds::default(),
             path_slot: path_bar::SlotWidth::default(),
             info_slot: path_bar::SlotWidth::default(),
+            tools_slot: path_bar::SlotWidth::default(),
+            rest_slot: path_bar::SlotWidth::default(),
+            fold_logged: std::cell::Cell::new(None),
+            row_fold: RowFold::default(),
             top_row: top_bar::TopRow::default(),
             toolbar: toolbar::ToolbarKeys::new(cx.focus_handle()),
             filter_input,
@@ -2052,6 +2108,7 @@ impl Explorer {
     pub(crate) fn refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.folder_sizes.invalidate();
         self.reload(cx);
+        self.parent_relist();
         if self.search_mode {
             // Refresh also rewalks subfolders.
             self.search_root = None;
@@ -2255,9 +2312,7 @@ impl Explorer {
                 dir,
                 folders,
             } => self.handle_path_folders(request, &dir, folders, cx),
-            AppEvent::ParentColumn { dir, entries } => {
-                self.handle_parent_column(dir, entries, cx);
-            }
+            AppEvent::ParentIo { column, event } => self.handle_parent_io(column, event, cx),
             AppEvent::LinkTargets { generation, found } => {
                 self.handle_link_targets(generation, found, cx);
             }
@@ -2689,6 +2744,7 @@ impl Explorer {
     fn apply_sort(&mut self, sort: SortSpec, cx: &mut Context<Self>) {
         self.sort = sort;
         self.tree_resort();
+        self.parent_resort();
         self.ensure_sorted(cx);
         cx.notify();
     }
@@ -3391,6 +3447,10 @@ impl Explorer {
         if mode != ViewMode::Details {
             self.tree_clear();
         }
+        if mode != ViewMode::Columns {
+            // Stops the parent column's watch, also in a tab not drawn right now.
+            self.parent_column = None;
+        }
         if let Some(ix) = self.cursor {
             self.scroll_to_index(ix, ScrollStrategy::Center);
         } else {
@@ -3525,6 +3585,7 @@ impl Explorer {
             self.hidden_rules = rules;
             self.show_hidden = show_hidden;
             self.reload(cx);
+            self.parent_relist();
             if self.search_mode {
                 self.update_search(cx);
             }

@@ -105,6 +105,8 @@ impl DraggedFiles {
 /// window.
 pub(crate) struct PendingDragOut {
     pub(crate) paths: Vec<PathBuf>,
+    /// Remote items, handed over as virtual files (#529), listed already.
+    pub(crate) remote: Option<Arc<crate::remote_shell::RemoteItems>>,
     /// Image that follows the cursor, once the background job finishes.
     pub(crate) image: Option<DragImage>,
     /// Drag generation; a finished image is only applied to the drag it was made for.
@@ -132,9 +134,6 @@ impl gpui::Global for RightDrag {}
 pub(crate) struct RightPress {
     pub(crate) at: Point<Pixels>,
 }
-
-/// Most bytes downloaded so remote items can be dragged into other programs.
-const DRAG_STAGE_MAX: u64 = 64 * 1024 * 1024;
 
 /// Inputs for the drag image, gathered on the UI thread without touching disk.
 struct DragImageJob {
@@ -195,6 +194,7 @@ impl DragPreview {
         } else {
             cx.set_global(PendingDragOut {
                 paths,
+                remote: None,
                 image: None,
                 id,
             });
@@ -215,30 +215,38 @@ impl DragPreview {
         preview
     }
 
-    /// Other programs need files on disk: remote items are downloaded first (up to
-    /// [`DRAG_STAGE_MAX`]), and the drag can leave the window once their copies are ready.
-    /// Drops inside Arke don't wait for this; they transfer from the server directly.
+    /// Other programs get remote items as virtual files, read from the server as they take
+    /// them (#529). Their names and sizes are listed first, in the background, and the drag can
+    /// leave the window once they are (the drag's data object, on the UI thread, never waits on
+    /// the server). Nothing is downloaded. Drops inside Arke don't wait for this; they transfer
+    /// from the server directly.
     fn stage_remote(paths: Vec<PathBuf>, id: u64, services: &super::Services, cx: &mut App) {
+        if !paths.iter().all(|p| arke_core::remote::is_remote(p)) {
+            // Local and remote items in one drag: only Arke takes them.
+            return;
+        }
         let (tx, rx) = flume::bounded(1);
-        let remotes = Arc::clone(&services.remotes);
-        spawn_thread("drag-stage", move || {
-            let _ = tx.send(crate::remote_shell::stage_local_copies(
-                &remotes,
-                &paths,
-                DRAG_STAGE_MAX,
-            ));
+        let items = crate::remote_shell::RemoteItems::new(
+            Arc::clone(&services.remotes),
+            paths.clone(),
+            false,
+        );
+        let listed = Arc::clone(&items);
+        spawn_thread("drag-list", move || {
+            let _ = tx.send(listed.listing().map(|_| ()));
         });
         cx.spawn(async move |cx| {
-            let staged = rx.recv_async().await;
-            cx.update(|cx| match staged {
-                Ok(Ok(local)) if cx.has_active_drag() && DRAG_ID.load(Ordering::Relaxed) == id => {
+            let listed = rx.recv_async().await;
+            cx.update(|cx| match listed {
+                Ok(Ok(())) if cx.has_active_drag() && DRAG_ID.load(Ordering::Relaxed) == id => {
                     cx.set_global(PendingDragOut {
-                        paths: local,
+                        paths,
+                        remote: Some(items),
                         image: None,
                         id,
                     });
                 }
-                Ok(Err(err)) => log::info!("remote items not staged for drag out: {err}"),
+                Ok(Err(err)) => log::info!("remote items not listed for drag out: {err}"),
                 _ => {}
             });
         })

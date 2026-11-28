@@ -137,6 +137,8 @@ zip.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 arke-core = { workspace = true, features = ["test-support"] }
 arke-remote = { workspace = true, features = ["test-support"] }
+# Property tests for layout decisions: fold rules checked over generated widths
+proptest = "1.12"
 
 # Tests that list a process's threads (the menu host's leftover threads)
 [target.'cfg(windows)'.dev-dependencies.windows]

@@ -36,6 +36,7 @@ use crate::explorer::{DraggedFiles, Explorer, drop_external_into, drop_into, kin
 use crate::place_names::share_label;
 use crate::settings::{FAVORITES_MAX, PinSlot, SettingsStore, SidebarSection};
 use crate::shell::{KnownFolder, Place, PlaceKind};
+use crate::splitter::{DragEnd, Splitter};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, UiFont as _};
 use crate::workspace::{Tooltip, TooltipBelowExt as _};
@@ -2580,42 +2581,37 @@ impl Workspace {
     /// places are, as the pinned tabs' line in Firefox does; double-clicked, the room is shared
     /// by itself again. Always a faint line, so it can be found; brighter under the mouse.
     fn render_places_split(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.split_drag.is_some();
-        div()
-            .id("sidebar-split")
-            .debug_selector(|| "sidebar-split".to_owned())
-            .group("sidebar-split")
-            .flex_none()
-            // Easy to take hold of: the whole strip, not only the line drawn in it.
-            .h(px(9.))
-            .flex()
-            .items_center()
-            .cursor_row_resize()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    if event.click_count >= 2 {
-                        this.split_drag = None;
-                        SettingsStore::global(cx)
-                            .update(cx, |s, cx| s.update(|st| st.sidebar_split = 0., cx));
-                    } else {
-                        let height = this.sidebar_ui.places_scroll.bounds().size.height;
-                        this.split_drag = Some((event.position.y, height, height));
-                    }
-                    cx.stop_propagation();
+        // Easy to take hold of: the whole strip, not only the line drawn in it.
+        let hit = div().flex_none().h(px(9.)).flex().items_center();
+        let line = div()
+            .w_full()
+            .mx(theme::s_8())
+            .h(px(2.))
+            .rounded(theme::R_FULL)
+            .bg(theme::line());
+        Splitter::new("sidebar-split", gpui::CursorStyle::ResizeRow)
+            .round(true)
+            .dragging(self.split_drag.is_some())
+            .on_start(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                let height = this.sidebar_ui.places_scroll.bounds().size.height;
+                this.split_drag = Some((e.position.y, height, height));
+                cx.notify();
+            }))
+            .on_double_click(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.split_drag = None;
+                SettingsStore::global(cx)
+                    .update(cx, |s, cx| s.update(|st| st.sidebar_split = 0., cx));
+                cx.notify();
+            }))
+            .on_drag(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                if let Some((from_y, from_h, _)) = this.split_drag {
+                    let height = (from_h + e.position.y - from_y).max(px(0.));
+                    this.split_drag = Some((from_y, from_h, height));
                     cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .mx(theme::s_8())
-                    .h(px(2.))
-                    .rounded(theme::R_FULL)
-                    .when(!active, |d| d.bg(theme::line()))
-                    .when(active, |d| d.bg(theme::signal()))
-                    .group_hover("sidebar-split", |s| s.bg(theme::signal_line())),
-            )
+                }
+            }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| this.finish_split_drag(cx)))
+            .render(hit, line)
             .into_any_element()
     }
 
@@ -4642,9 +4638,15 @@ impl Workspace {
             })
             .collect();
         let close_button = Self::tab_close_button(ix, cx);
+        let horizontal = Self::horizontal_tabs(cx);
+        // Tabs on top: the close button sits over the end of the tab and takes its room from the
+        // title only where it shows (the active tab, the one under the pointer), so the other
+        // titles keep it (#533). The title doesn't move, its end is cut sooner.
+        let floating_close = horizontal && !tab.pinned;
+        let close_shown = floating_close && self.strip_close_shown(ix);
         // Sidebar tabs follow the density like the other sidebar rows (#438); the top strip's
         // tabs fill its bar and keep their height.
-        let row_h = if Self::horizontal_tabs(cx) {
+        let row_h = if horizontal {
             theme::h_row()
         } else {
             theme::h_row_side()
@@ -4667,7 +4669,11 @@ impl Workspace {
             .items_center()
             .gap(theme::s_4())
             .pl(if split { theme::s_4() } else { theme::s_8() })
-            .pr(theme::s_6())
+            .pr(if close_shown {
+                theme::s_6() + super::tabstrip::close_room()
+            } else {
+                theme::s_6()
+            })
             .rounded(theme::r_8())
             .cursor_pointer()
             // Slides from the old position after a reorder (the offset is relative).
@@ -4734,7 +4740,7 @@ impl Workspace {
             .aria_selected(active)
             // The sidebar's tab titles are only the folder's name: the full path is on hover.
             .when_some(
-                (!Self::horizontal_tabs(cx))
+                (!horizontal)
                     .then(|| self.tab_tip(ix, cx))
                     .flatten(),
                 |d, tip| d.aria_description(tip.clone()).tooltip(tooltip_text(tip)),
@@ -4771,13 +4777,34 @@ impl Workspace {
                     .into_any_element(),
                 None => kind_icon(FileKind::Folder, theme::icon()),
             };
-            row.gap(theme::s_8())
-                .child(icon)
-                .child(div().flex_1().min_w_0().truncate().child(title))
+            row.gap(theme::s_8()).child(icon).child(
+                div()
+                    .debug_selector(move || format!("tab-title-{ix}"))
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(title),
+            )
         };
         let row = if tab.pinned {
             // Pinned: a pin instead of the close button, always shown; clicking it unpins.
             row.child(Self::tab_pin_button(ix, cx))
+        } else if floating_close {
+            row.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(theme::s_6())
+                    .flex()
+                    .items_center()
+                    // Shown at once where hover styles see the pointer; the title gives way from
+                    // the next frame, once the strip saw the pointer there too (`strip_watch`).
+                    .when(!close_shown, |d| {
+                        d.invisible().group_hover(group, gpui::Styled::visible)
+                    })
+                    .child(close_button),
+            )
         } else {
             row.child(
                 // Close button only on the active tab or on hover.
@@ -4791,7 +4818,7 @@ impl Workspace {
         };
         let last_pinned = tab.pinned && self.tabs.get(ix + 1).is_none_or(|t| !t.pinned);
         let shell = self.tab_drag_shell(ix, row, cx);
-        if last_pinned && !Self::horizontal_tabs(cx) && ix + 1 < self.tabs.len() {
+        if last_pinned && !horizontal && ix + 1 < self.tabs.len() {
             // A hairline under the pinned group sets it apart from the other tabs.
             div()
                 .flex()
@@ -5095,6 +5122,16 @@ pub(crate) fn reload_places_everywhere(cx: &mut App) {
     for window in cx.windows() {
         if let Some(workspace) = window.downcast::<Workspace>() {
             let _ = workspace.update(cx, |ws, _, cx| ws.reload_all_places(cx));
+        }
+    }
+}
+
+/// A remote folder changed outside Arke's own operations (a program moved cut items out of it,
+/// #529): the panes showing it, in every window, relist.
+pub(crate) fn reload_remote_everywhere(folder: &Path, cx: &mut App) {
+    for window in cx.windows() {
+        if let Some(workspace) = window.downcast::<Workspace>() {
+            let _ = workspace.update(cx, |ws, _, cx| ws.reload_remote(folder, cx));
         }
     }
 }

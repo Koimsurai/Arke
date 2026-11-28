@@ -1,5 +1,6 @@
-//! GPUI tests for sizing the column view's columns (`explorer_columns.rs`): dragging a divider,
-//! the minimum width, fitting a column to its longest name, and saving the widths.
+//! GPUI tests for the column view's columns (`explorer_columns.rs`): sizing them (dragging a
+//! divider, the minimum width, fitting a column to its longest name, saving the widths), drops on
+//! the parent column, the drives at a drive root, and the parent column's live listing.
 
 use gpui::{Modifiers, MouseButton, Pixels, Point, point, px};
 
@@ -284,12 +285,26 @@ fn drop_columns(
     Entity<Workspace>,
     &mut VisualTestContext,
 ) {
+    let (_fs, shell, view, ws, cx) = drop_columns_fs(cx);
+    (shell, view, ws, cx)
+}
+
+/// [`drop_columns`], with its file system.
+fn drop_columns_fs(
+    cx: &mut TestAppContext,
+) -> (
+    Arc<FakeFs>,
+    Arc<FakeShell>,
+    Entity<Explorer>,
+    Entity<Workspace>,
+    &mut VisualTestContext,
+) {
     let fs = FakeFs::new();
     fs.insert_dir(r"C:\m", vec![dir("aaa"), dir("one"), file("b.txt", 1)]);
     fs.insert_dir(r"C:\m\aaa", vec![]);
     fs.insert_dir(r"C:\m\one", vec![file("x.txt", 1), file("y.txt", 1)]);
     let shell = Arc::new(FakeShell::default());
-    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\m\one");
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"C:\m\one");
     let view = ws.update(cx, |ws, _| ws.active_view().clone());
     wait_until(cx, &view, "load", loaded(r"C:\m\one"));
     cx.simulate_resize(gpui::size(px(1800.), px(800.)));
@@ -298,7 +313,7 @@ fn drop_columns(
         v.parent_column_names().len() == 3
     });
     cx.run_until_parked();
-    (shell, view, ws, cx)
+    (fs, shell, view, ws, cx)
 }
 
 /// Centre of the current column's first row (`x.txt`).
@@ -516,3 +531,236 @@ fn a_pinned_tab_blocks_navigation_but_not_the_levels_list(cx: &mut TestAppContex
         "and the folder stays"
     );
 }
+
+/// Draws the window again, so debug bounds follow the latest state.
+fn redraw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+fn drive(label: &str, root: &str, remote: bool) -> Place {
+    Place {
+        label: label.into(),
+        path: PathBuf::from(root),
+        kind: PlaceKind::Drive {
+            remote,
+            space: None,
+        },
+    }
+}
+
+/// Copies and moves land on the fake file system too, and its watchers hear of them.
+fn ops_on_fake_fs(fs: &Arc<FakeFs>, shell: &FakeShell) {
+    let fs = Arc::clone(fs);
+    *shell.on_op.lock() = Some(Box::new(move |op| {
+        let (FileOp::Copy { sources, dest } | FileOp::Move { sources, dest }) = op else {
+            return;
+        };
+        for source in sources {
+            let name = source.file_name().unwrap().to_str().unwrap();
+            if matches!(op, FileOp::Move { .. }) {
+                let from = source.parent().unwrap();
+                fs.remove(from, name);
+                fs.emit_changed(from, &[name]);
+            }
+            fs.add_file(dest, name, 1);
+            fs.emit_changed(dest, &[name]);
+        }
+    }));
+}
+
+/// #523: a drive root has no parent, so the parent column lists the computer's drives (mapped
+/// ones too), the current one marked. Clicking another drive goes there and stays in the column
+/// view.
+#[gpui::test]
+fn a_drive_root_lists_the_drives(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\", vec![file("c.txt", 1)]);
+    fs.insert_dir(r"C:\Users", vec![file("u.txt", 1)]);
+    fs.insert_dir(r"D:\", vec![file("d.txt", 1)]);
+    let shell = Arc::new(FakeShell::default());
+    shell.extra_places.lock().extend([
+        drive("Local Disk (C:)", r"C:\", false),
+        drive("Data (D:)", r"D:\", false),
+        drive("Share (Z:)", r"Z:\", true),
+    ]);
+    let (ws, cx) = setup_workspace_with(cx, fs, shell, r"C:\");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", |v| {
+        loaded(r"C:\")(v) && v.places.len() == 4
+    });
+    cx.simulate_resize(gpui::size(px(1800.), px(800.)));
+    cx.dispatch_action(crate::explorer::ViewColumns);
+    redraw(cx);
+    let roots = vec![
+        PathBuf::from(r"C:\"),
+        PathBuf::from(r"D:\"),
+        PathBuf::from(r"Z:\"),
+    ];
+    assert_eq!(
+        view.update(cx, |v, _| v.parent_column_drives()),
+        Some((roots.clone(), Some(0)))
+    );
+    assert_eq!(
+        view.update(cx, |v, _| v.parent_column_lists()),
+        None,
+        "no folder listed or watched"
+    );
+    let d = centre(cx, "parent-drive-1");
+    cx.simulate_click(d, Modifiers::none());
+    wait_until(cx, &view, "on D:", loaded(r"D:\"));
+    redraw(cx);
+    view.update(cx, |v, _| {
+        assert_eq!(
+            v.view_mode,
+            crate::explorer::ViewMode::Columns,
+            "still the column view"
+        );
+        assert_eq!(v.parent_column_drives(), Some((roots, Some(1))));
+    });
+    // In a folder of the drive, the column lists the drive again.
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "on C:", loaded(r"C:\"));
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\Users"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "in Users", loaded(r"C:\Users"));
+    wait_until(cx, &view, "the drive listed", |v| {
+        v.parent_column_drives().is_none() && v.parent_column_names() == ["Users", "c.txt"]
+    });
+}
+
+/// A parent folder that can't be listed says why in the column instead of staying empty, and is
+/// listed again on the next navigation.
+#[gpui::test]
+fn a_failed_parent_listing_shows_why_and_is_retried(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    // `C:\m\one` alone: its parent can't be listed.
+    fs.add_entry(Path::new(r"C:\m\one"), file("x.txt", 1));
+    let (ws, cx) = setup_workspace(cx, Arc::clone(&fs), r"C:\m\one");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\m\one"));
+    cx.simulate_resize(gpui::size(px(1800.), px(800.)));
+    cx.dispatch_action(crate::explorer::ViewColumns);
+    wait_until(cx, &view, "the failure", |v| {
+        v.parent_column_error().is_some()
+    });
+    redraw(cx);
+    assert!(
+        cx.debug_bounds("parent-column-error").is_some(),
+        "the column says why"
+    );
+    assert!(view.update(cx, |v, _| v.parent_column_names().is_empty()));
+
+    // It can be listed now: going to another folder in it tries again.
+    fs.insert_dir(r"C:\m", vec![dir("one"), dir("two")]);
+    fs.add_entry(Path::new(r"C:\m\two"), file("y.txt", 1));
+    view.update(cx, |v, cx| {
+        v.navigate(PathBuf::from(r"C:\m\two"), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "two", loaded(r"C:\m\two"));
+    wait_until(cx, &view, "listed after the retry", |v| {
+        v.parent_column_names() == ["one", "two"]
+    });
+    assert_eq!(view.update(cx, |v, _| v.parent_column_error()), None);
+    redraw(cx);
+    assert!(cx.debug_bounds("parent-column-error").is_none());
+    assert!(
+        cx.debug_bounds("parent-row-1").is_some(),
+        "the rows are back"
+    );
+}
+
+/// #524 (#430): an item moved into the parent column's folder shows up there.
+#[gpui::test]
+fn a_drop_into_the_parent_column_shows_up_in_it(cx: &mut TestAppContext) {
+    let (fs, shell, view, _ws, cx) = drop_columns_fs(cx);
+    ops_on_fake_fs(&fs, &shell);
+    wait_watcher(&fs, Path::new(r"C:\m"));
+    let column = cx.debug_bounds("parent-column").expect("column drawn");
+    let empty = point(column.left() + px(60.), column.bottom() - px(40.));
+    let from = x_txt_row(&view, cx);
+    drag_and_drop(cx, from, empty, Modifiers::none());
+    wait_until(cx, &view, "the moved file in the parent column", |v| {
+        v.parent_column_names() == ["aaa", "one", "b.txt", "x.txt"]
+    });
+}
+
+/// #524: the parent column follows changes other programs make in its folder; leaving the column
+/// view stops watching it.
+#[gpui::test]
+fn the_parent_column_follows_its_watcher(cx: &mut TestAppContext) {
+    let (fs, _shell, view, _ws, cx) = drop_columns_fs(cx);
+    let parent = Path::new(r"C:\m");
+    wait_watcher(&fs, parent);
+    fs.add_file(parent, "new.txt", 1);
+    fs.emit_changed(parent, &["new.txt"]);
+    wait_until(cx, &view, "watcher delta", |v| {
+        v.parent_column_names() == ["aaa", "one", "b.txt", "new.txt"]
+    });
+    fs.remove(parent, "b.txt");
+    fs.emit_changed(parent, &["b.txt"]);
+    wait_until(cx, &view, "watcher removal", |v| {
+        v.parent_column_names() == ["aaa", "one", "new.txt"]
+    });
+
+    cx.dispatch_action(crate::explorer::ViewDetails);
+    cx.run_until_parked();
+    assert_eq!(view.update(cx, |v, _| v.parent_column_lists()), None);
+    wait_shell_in(cx, "the parent's watch stopped", || {
+        fs.watcher_count(parent) == 0
+    });
+}
+
+/// #524: F5 lists the parent column's folder again, picking up what no watcher reported.
+#[gpui::test]
+fn f5_relists_the_parent_column(cx: &mut TestAppContext) {
+    let (fs, _shell, view, _ws, cx) = drop_columns_fs(cx);
+    fs.add_file(Path::new(r"C:\m"), "quiet.txt", 1);
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| v.parent_column_names()),
+        ["aaa", "one", "b.txt"]
+    );
+    cx.simulate_keystrokes("f5");
+    wait_until(cx, &view, "relisted", |v| {
+        v.parent_column_names() == ["aaa", "one", "b.txt", "quiet.txt"]
+    });
+}
+
+/// #524: showing or hiding hidden items, and another sort, apply to the parent column too.
+#[gpui::test]
+fn the_parent_column_follows_hidden_items_and_the_sort(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let secret = Entry::new("secret", EntryKind::Dir, 0, None, FILE_ATTRIBUTE_HIDDEN);
+    fs.insert_dir(r"C:\m", vec![dir("one"), secret, file("b.txt", 1)]);
+    fs.insert_dir(r"C:\m\one", vec![file("x.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, fs, r"C:\m\one");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\m\one"));
+    cx.simulate_resize(gpui::size(px(1800.), px(800.)));
+    cx.dispatch_action(crate::explorer::ViewColumns);
+    wait_until(cx, &view, "parent column", |v| {
+        v.parent_column_names() == ["one", "b.txt"]
+    });
+    cx.simulate_keystrokes("ctrl-h");
+    wait_until(cx, &view, "hidden items shown", |v| {
+        v.parent_column_names() == ["one", "secret", "b.txt"]
+    });
+    cx.simulate_keystrokes("ctrl-h");
+    wait_until(cx, &view, "hidden items hidden again", |v| {
+        v.parent_column_names() == ["one", "b.txt"]
+    });
+    // Name descending, folders before files (File Explorer): the files come first.
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Name, false, false), cx);
+    });
+    wait_until(cx, &view, "resorted", |v| {
+        v.parent_column_names() == ["b.txt", "one"]
+    });
+}
+
+/// `FILE_ATTRIBUTE_HIDDEN`.
+const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;

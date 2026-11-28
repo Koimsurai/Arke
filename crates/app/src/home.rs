@@ -30,7 +30,7 @@ use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{kind_icon, spawn_thread};
 use crate::press_guard::is_double_click;
-use crate::settings::SettingsStore;
+use crate::settings::{SettingsStore, SidebarSection};
 use crate::shell::{Place, PlaceKind, Shell};
 use crate::text_input::TextInput;
 use crate::theme::{self, UiFont as _};
@@ -1535,12 +1535,20 @@ impl Render for HomePage {
             self.reveal.set(true);
         }
         self.spots.borrow_mut().clear();
-        let quick: Vec<AnyElement> = self
-            .favorites
-            .iter()
-            .enumerate()
-            .map(|(ix, (path, label, icon))| self.quick_card(ix, path, label, *icon, cx))
-            .collect();
+        // Favorites hidden in the sidebar (#323) are hidden here too (#539); collapsed is not.
+        let favorites_hidden = SettingsStore::global(cx)
+            .read(cx)
+            .settings
+            .is_hidden(SidebarSection::Favorites);
+        let quick: Vec<AnyElement> = if favorites_hidden {
+            Vec::new()
+        } else {
+            self.favorites
+                .iter()
+                .enumerate()
+                .map(|(ix, (path, label, icon))| self.quick_card(ix, path, label, *icon, cx))
+                .collect()
+        };
         // Cards still sliding into their cells after a reorder.
         let now = std::time::Instant::now();
         self.card_shift.retain(|_, s| s.live(now));

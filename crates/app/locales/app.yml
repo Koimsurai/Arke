@@ -6086,6 +6086,14 @@ clip.empty:
   es: No hay archivos en el Portapapeles
   pt-BR: Não há arquivos na área de transferência
   ja: クリップボードにファイルがありません
+clip.remote_too_large:
+  en: More than 512 MB can't be downloaded for the clipboard. Drag the items into a folder in Arke instead
+  zh-TW: 超過 512 MB 無法下載到剪貼簿，請改成把項目拖曳到 Arke 裡的資料夾
+  zh-CN: 超过 512 MB 无法下载到剪贴板，请改为把项目拖动到 Arke 中的文件夹
+  de: Mehr als 512 MB können nicht für die Zwischenablage heruntergeladen werden. Ziehen Sie die Elemente stattdessen in einen Ordner in Arke
+  es: No se pueden descargar más de 512 MB para el Portapapeles. Arrastre los elementos a una carpeta de Arke
+  pt-BR: Não é possível baixar mais de 512 MB para a área de transferência. Arraste os itens para uma pasta no Arke
+  ja: 512 MB を超えるとクリップボード用にダウンロードできません。項目を Arke のフォルダーにドラッグしてください
 clip.busy:
   en: The clipboard is being used by another program
   zh-TW: 剪貼簿正被其他程式使用
@@ -7212,6 +7220,22 @@ sidebar.close_tab:
   es: Cerrar pestaña
   pt-BR: Fechar guia
   ja: タブを閉じる
+sidebar.scroll_tabs_left:
+  en: Scroll tabs left
+  zh-TW: 向左捲動分頁
+  zh-CN: 向左滚动标签页
+  de: Registerkarten nach links scrollen
+  es: Desplazar pestañas a la izquierda
+  pt-BR: Rolar guias para a esquerda
+  ja: タブを左にスクロール
+sidebar.scroll_tabs_right:
+  en: Scroll tabs right
+  zh-TW: 向右捲動分頁
+  zh-CN: 向右滚动标签页
+  de: Registerkarten nach rechts scrollen
+  es: Desplazar pestañas a la derecha
+  pt-BR: Rolar guias para a direita
+  ja: タブを右にスクロール
 sidebar.close_side:
   en: Close active side
   zh-TW: 關閉目前這一側
@@ -10128,13 +10152,13 @@ cmd.focus_filter:
   pt-BR: Filtrar esta pasta
   ja: このフォルダーをフィルター
 cmd.focus_search:
-  en: Search
-  zh-TW: 搜尋
-  zh-CN: 搜索
-  de: Suchen
-  es: Buscar
-  pt-BR: Pesquisar
-  ja: 検索
+  en: Search subfolders
+  zh-TW: 搜尋子資料夾
+  zh-CN: 搜索子文件夹
+  de: In Unterordnern suchen
+  es: Buscar en subcarpetas
+  pt-BR: Pesquisar nas subpastas
+  ja: サブフォルダーを検索
 cmd.focus_computer_search:
   en: Search this PC
   zh-TW: 搜尋這台電腦
@@ -10844,3 +10868,19 @@ access.drop_cancel:
   es: "N"
   pt-BR: "C"
   ja: "A"
+access.sync:
+  en: "N"
+  zh-TW: "N"
+  zh-CN: "N"
+  de: "Y"
+  es: "Z"
+  pt-BR: "Z"
+  ja: "N"
+access.compare:
+  en: "M"
+  zh-TW: "M"
+  zh-CN: "M"
+  de: "O"
+  es: "-"
+  pt-BR: "-"
+  ja: "M"

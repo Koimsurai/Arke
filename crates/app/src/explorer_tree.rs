@@ -35,9 +35,9 @@ use crate::assets::Icon;
 use crate::settings::SettingsStore;
 use crate::theme;
 
-/// Expanded folders with at most this many items resort inline when the sort changes; larger ones
-/// are relisted in the background in the new order.
-const INLINE_RESORT_MAX: usize = 2_000;
+/// Expanded folders (and the column view's parent column) with at most this many items resort
+/// inline when the sort changes; larger ones are relisted in the background in the new order.
+pub(super) const INLINE_RESORT_MAX: usize = 2_000;
 
 /// The flattened entries and their rows.
 type FlatList = (Arc<Vec<Entry>>, Arc<Vec<TreeRow>>);
@@ -447,7 +447,9 @@ impl Explorer {
 
     // ───────────────────────── Listings ─────────────────────────
 
-    const fn tree_list_options(&self) -> ListOptions {
+    /// How expanded folders and the column view's parent column are listed: the tab's sort and
+    /// hidden-items setting, watched.
+    pub(super) const fn tree_list_options(&self) -> ListOptions {
         ListOptions {
             sort: self.sort,
             show_hidden: self.show_hidden,

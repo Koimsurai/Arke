@@ -346,11 +346,14 @@ fn a_narrow_window_keeps_everything_in_reach(cx: &mut TestAppContext) {
 /// With items selected the pane row shows their actions; the path bar keeps its room.
 #[gpui::test]
 fn the_selection_actions_share_the_pane_row(cx: &mut TestAppContext) {
-    let (_ws, view, cx) = open_deep(cx, 1000.);
+    let (_ws, view, cx) = open_deep(cx, 1600.);
     assert!(
         cx.debug_bounds("pane-info").is_some(),
         "the item count shows"
     );
+    // Narrow enough for the item count to go (#474), and the selection to give way.
+    cx.simulate_resize(size(px(1000.), px(650.)));
+    settle(cx);
     cx.simulate_keystrokes("ctrl-a");
     settle(cx);
     assert_eq!(view.update(cx, |v, _| v.selection.len()), 3);
@@ -369,8 +372,9 @@ fn path_keep() -> Pixels {
 }
 
 /// #388: the selection's buttons fold into "⋯" before they squeeze the path bar, at whatever
-/// width: with them in the row the path bar keeps [`path_keep`] and the current folder, and the
-/// fold leaves the path bar as wide as with nothing selected, give or take the "● 3 ⋯".
+/// width: with any of them in the row the path bar keeps [`path_keep`] and the current folder,
+/// and the full fold leaves the path bar as wide as with nothing selected, give or take the
+/// "● 3 ⋯".
 #[gpui::test]
 fn the_selection_never_squeezes_the_path_bar(cx: &mut TestAppContext) {
     let (ws, left, cx) = open_deep(cx, 1600.);
@@ -382,7 +386,7 @@ fn the_selection_never_squeezes_the_path_bar(cx: &mut TestAppContext) {
             select(cx, view, true);
             let path = bounds(cx, "path-bar");
             let actions = bounds(cx, "selection-actions");
-            let folded = cx.debug_bounds("sel-more").is_some();
+            let folded = folded(cx);
             let at = format!("{at}, folded {folded}: {path:?} {actions:?}");
             assert!(path.right() <= actions.left() + px(0.5), "{at}");
             if folded {
@@ -408,6 +412,8 @@ fn the_selection_never_squeezes_the_path_bar(cx: &mut TestAppContext) {
     // Split view: the right pane (on OTHER, drawn last) gets Copy to/Move to the other side.
     cx.simulate_resize(size(px(1600.), px(650.)));
     settle(cx);
+    // Only the right pane holds a selection, so the buttons found are its own.
+    select(cx, &left, false);
     let right = split(&ws, &left, cx);
     for width in [2400., 2000., 1800., 1600., 1400.] {
         cx.simulate_resize(size(px(width), px(650.)));
@@ -433,58 +439,105 @@ fn select(cx: &mut VisualTestContext, view: &Entity<Explorer>, all: bool) {
     settle(cx);
 }
 
-/// #388: with one item selected (one more button, Rename) and the preview pane open, the buttons
-/// fold into "⋯" before the path bar loses a parent folder; only when it doesn't fit even with
-/// them folded does it collapse.
+/// Every button in "⋯": only "● 3 ⋯" is drawn (Delete is the last to go).
+fn folded(cx: &mut VisualTestContext) -> bool {
+    cx.debug_bounds("sel-more").is_some() && cx.debug_bounds("sel-delete").is_none()
+}
+
+/// Selects `view`'s first item alone.
+fn select_one(cx: &mut VisualTestContext, view: &Entity<Explorer>) {
+    view.update(cx, |v, cx| {
+        v.selection.clear();
+        if let Some(entry) = v.view().and_then(|entries| entries.first().cloned()) {
+            v.selection.select_name(entry.name);
+        }
+        cx.notify();
+    });
+    settle(cx);
+    assert_eq!(view.update(cx, |v, _| v.selection.len()), 1);
+}
+
+/// One item's buttons, in the order they move into "⋯".
+const ONE_ITEM_BUTTONS: [&str; 5] = [
+    "sel-open",
+    "sel-rename",
+    "sel-cut",
+    "sel-copy",
+    "sel-delete",
+];
+
+/// #388, #474, #528: with one item selected (one more button, Rename) and the preview pane open,
+/// the row gives way in steps as the window narrows: the view switcher, then Sort into "⋯", then
+/// the summary shortens to "● 1", the buttons move into "⋯" one at a time (the least used first,
+/// Delete last), and only then does the path bar lose a parent folder.
 #[gpui::test]
 fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
-    let (_ws, view, cx) = open_deep(cx, 1600.);
+    let (_ws, view, cx) = open_deep(cx, 2200.);
     cx.update(|_, cx| {
         crate::settings::SettingsStore::global(cx)
             .update(cx, |s, cx| s.update(|st| st.preview_pane = true, cx));
     });
     let levels = arke_core::path::breadcrumbs(std::path::Path::new(DEEP)).len();
-    let one = |cx: &mut VisualTestContext| {
-        view.update(cx, |v, cx| {
-            v.selection.clear();
-            if let Some(entry) = v.view().and_then(|entries| entries.first().cloned()) {
-                v.selection.select_name(entry.name);
-            }
-            cx.notify();
-        });
-        settle(cx);
-        assert_eq!(view.update(cx, |v, _| v.selection.len()), 1);
-    };
-    let mut saw_fold_keeping_path = false;
-    for width in (1000..=1600_u16).rev().step_by(50) {
+    // With the whole path: everything drawn; some buttons in "⋯"; only "● 1 ⋯".
+    let mut seen = [false; 3];
+    // Steps smaller than the room any stage spans.
+    for width in (500..=2200_u16).rev().step_by(20) {
         cx.simulate_resize(size(px(f32::from(width)), px(650.)));
         settle(cx);
-        one(cx);
-        let folded = cx.debug_bounds("sel-more").is_some();
+        select_one(cx, &view);
+        let drawn = ONE_ITEM_BUTTONS.map(|id| cx.debug_bounds(id).is_some());
+        let more = cx.debug_bounds("sel-more").is_some();
+        let pill = cx.debug_bounds("sel-count").is_some();
+        let sort = cx.debug_bounds("sort-options").is_some();
+        let switcher = cx.debug_bounds("view-switcher").is_some();
         let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
-        if !folded && shown < levels {
-            // The path bar collapses only when folding the buttons wouldn't have saved it:
-            // "● 1 ⋯" is well under 110 px.
-            let path = bounds(cx, "path-bar").size.width;
-            let actions = bounds(cx, "selection-actions").size.width;
-            let full = view.update_in(cx, |v, window, _| v.path_full_width(window));
-            assert!(
-                path + actions - px(110.) < full,
-                "{width} px: buttons out, path bar squeezed"
-            );
-        } else if folded && shown == levels {
-            saw_fold_keeping_path = true;
+        let row = view.update(cx, |v, _| v.row_debug_for_test());
+        let at = format!(
+            "{width} px: {drawn:?}, ⋯ {more}, pill {pill}, sort {sort}, switcher {switcher}, \
+             {shown} of {levels}; {row}"
+        );
+        // The least used go first: a button in "⋯" never has a less used one still drawn.
+        assert!(drawn.windows(2).all(|w| !w[0] || w[1]), "{at}");
+        assert!(
+            !switcher || sort,
+            "the view switcher goes before Sort: {at}"
+        );
+        assert_eq!(
+            more,
+            drawn.contains(&false) || !sort,
+            "⋯ holds what isn't drawn: {at}"
+        );
+        assert!(
+            !pill || !sort,
+            "the view tools go before the summary shortens: {at}"
+        );
+        assert!(
+            !drawn.contains(&false) || pill,
+            "the summary shortens before any button goes: {at}"
+        );
+        assert!(
+            shown == levels || (pill && !sort && drawn.iter().all(|d| !d)),
+            "the path bar gives way last: {at}"
+        );
+        if shown == levels {
+            if !more && !pill {
+                seen[0] = true;
+            } else if drawn.contains(&false) && drawn[4] {
+                seen[1] = true;
+            } else if !drawn[4] {
+                seen[2] = true;
+            }
         }
     }
-    assert!(
-        saw_fold_keeping_path,
-        "a width where the fold saves the path"
+    assert_eq!(
+        seen, [true; 3],
+        "every stage keeps the whole path at some width"
     );
-    // Too narrow for the path even with the buttons folded: it may collapse.
+    // Too narrow for the path even with the buttons folded: it collapses.
     cx.simulate_resize(size(px(500.), px(650.)));
     settle(cx);
-    one(cx);
-    assert!(cx.debug_bounds("sel-more").is_some(), "folded when narrow");
+    select_one(cx, &view);
+    assert!(folded(cx), "folded when narrow");
     let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
     assert!(
         shown < levels,
@@ -492,8 +545,416 @@ fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
     );
 }
 
-/// #388: folded into "⋯", the selection's buttons are still in reach from the keyboard: F6 to the
-/// pane row, the arrows to "⋯", Enter opens the menu with Cut, Copy, Rename and Delete.
+/// #528: a five-level path in a moderately narrow window keeps every button and every level,
+/// the summary shrinking to "● 1" and Sort in "⋯" (#474). At these widths 0.10.1 folded every
+/// button into "⋯": the buttons with the summary "1 selected" didn't leave the path bar its whole
+/// width, and "● 1 ⋯" did.
+#[gpui::test]
+fn a_moderately_narrow_pane_keeps_the_buttons_and_the_path(cx: &mut TestAppContext) {
+    const FIVE: &str = r"C:\top1\projects\clients\acme";
+    let (_ws, view, cx) = open_deep(cx, 2000.);
+    view.update(cx, |e, cx| {
+        e.navigate(PathBuf::from(FIVE), NavKind::New, cx);
+    });
+    wait_until(cx, &view, "five levels", loaded(FIVE));
+    settle(cx);
+    let levels = arke_core::path::breadcrumbs(std::path::Path::new(FIVE)).len();
+    assert_eq!(levels, 5);
+    let mut found = None;
+    for width in (600..=2000_u16).rev().step_by(10) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        settle(cx);
+        select_one(cx, &view);
+        let all = ONE_ITEM_BUTTONS
+            .into_iter()
+            .all(|id| cx.debug_bounds(id).is_some());
+        let pill = cx.debug_bounds("sel-count").is_some();
+        let more = cx.debug_bounds("sel-more").is_some();
+        let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+        if all && pill && more && shown == levels {
+            found = Some(width);
+            break;
+        }
+    }
+    let width = found.expect("a width with \"● 1\", every button and every level");
+    let path = bounds(cx, "path-bar");
+    let actions = bounds(cx, "selection-actions");
+    assert!(
+        path.right() <= actions.left() + px(0.5),
+        "{width} px: {path:?} {actions:?}"
+    );
+    // Drawn whole, not cut off by the row.
+    let delete = bounds(cx, "sel-delete");
+    assert!(
+        delete.right() <= actions.right() + px(0.5),
+        "{width} px: {delete:?} {actions:?}"
+    );
+}
+
+/// #474: with nothing selected and a deep path, the view tools give way as the window narrows,
+/// the view switcher first (to the view options button alone), then Sort into a "⋯" of its own;
+/// the path bar loses a level only after both.
+#[gpui::test]
+fn the_view_tools_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
+    let (_ws, view, cx) = open_deep(cx, 2000.);
+    let levels = arke_core::path::breadcrumbs(std::path::Path::new(DEEP)).len();
+    // With the whole path: the switcher and Sort; the view button and Sort; the view button
+    // and "⋯".
+    let mut seen = [false; 3];
+    let mut before: Option<(u16, (bool, bool))> = None;
+    for width in (400..=2000_u16).rev().step_by(20) {
+        let stage = view_tools_at(cx, &view, width, levels, &mut seen);
+        // "⋯" for Sort saves only 16 px: walk back over a step that changed 2 px at a time, so
+        // a stage narrower than a step is seen too.
+        if let Some((wider, was)) = before
+            && was != stage
+        {
+            for between in (width + 2..wider).rev().step_by(2) {
+                view_tools_at(cx, &view, between, levels, &mut seen);
+            }
+        }
+        before = Some((width, stage));
+    }
+    assert_eq!(
+        seen, [true; 3],
+        "every stage keeps the whole path at some width"
+    );
+}
+
+/// The window `width` wide with nothing selected: checks the pane row's view tools against the
+/// path bar, notes in `seen` which stage kept the whole path, and returns the switcher's and
+/// Sort's.
+fn view_tools_at(
+    cx: &mut VisualTestContext,
+    view: &Entity<Explorer>,
+    width: u16,
+    levels: usize,
+    seen: &mut [bool; 3],
+) -> (bool, bool) {
+    cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+    settle(cx);
+    let switcher = cx.debug_bounds("view-switcher").is_some();
+    let sort = cx.debug_bounds("sort-options").is_some();
+    let options = cx.debug_bounds("view-options").is_some();
+    let more = cx.debug_bounds("row-more").is_some();
+    let shown = view.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+    let row = view.update(cx, |v, _| v.row_debug_for_test());
+    let at = format!(
+        "{width} px: switcher {switcher}, sort {sort}, more {more}, {shown} of {levels}; {row}"
+    );
+    assert!(options, "the view options button never folds: {at}");
+    assert!(!switcher || sort, "the switcher goes before Sort: {at}");
+    assert_eq!(more, !sort, "⋯ holds Sort: {at}");
+    assert!(
+        shown == levels || (!switcher && !sort),
+        "the path bar gives way last: {at}"
+    );
+    if shown == levels {
+        seen[0] |= switcher && sort;
+        seen[1] |= !switcher && sort;
+        seen[2] |= more;
+    }
+    (switcher, sort)
+}
+
+/// #474: Sort folded into "⋯" is in its menu, with the current column and direction checked,
+/// and in reach from the keyboard: F6 to the pane row, the arrows to "⋯", Enter.
+#[gpui::test]
+fn the_folded_sort_is_in_the_menu(cx: &mut TestAppContext) {
+    let (_ws, view, cx) = open_deep(cx, 2000.);
+    let mut found = None;
+    for width in (400..=2000_u16).rev().step_by(20) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        settle(cx);
+        if cx.debug_bounds("row-more").is_some() {
+            found = Some(width);
+            break;
+        }
+    }
+    found.expect("a width with Sort in ⋯");
+    view.update_in(cx, Explorer::focus_toolbar);
+    settle(cx);
+    for _ in 0..20 {
+        if view.update(cx, |v, _| v.toolbar_at_for_test()) == Some("row-more") {
+            break;
+        }
+        cx.simulate_keystrokes("right");
+        settle(cx);
+    }
+    assert_eq!(
+        view.update(cx, |v, _| v.toolbar_at_for_test()),
+        Some("row-more")
+    );
+    // GPUI presses the focused control on the release of Enter.
+    cx.simulate_keystrokes("enter");
+    let keystroke = gpui::Keystroke::parse("enter").unwrap();
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            cx,
+        );
+    });
+    settle(cx);
+    let labels = view
+        .update(cx, |v, _| {
+            v.context_menu
+                .as_ref()
+                .map(crate::explorer::ContextMenuForTest::labels)
+        })
+        .expect("Enter on ⋯ opens the folder's menu");
+    let sort_by = format!("{} ›", t!("settings.sort_by"));
+    assert!(labels.contains(&sort_by), "{labels:?}");
+}
+
+/// #474: each pane of a split tab folds its own row: the one on the deep path gives Sort up
+/// while the one on a short path keeps it.
+#[gpui::test]
+fn each_pane_folds_its_own_row(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 2400.);
+    let right = split(&ws, &left, cx);
+    let sort_folded = |cx: &mut VisualTestContext, view: &Entity<Explorer>| {
+        view.update(cx, |v, _| v.row_fold.sort_in_more())
+    };
+    let mut found = None;
+    for width in (800..=2400_u16).rev().step_by(20) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        settle(cx);
+        if sort_folded(cx, &left) && !sort_folded(cx, &right) {
+            found = Some(width);
+            break;
+        }
+    }
+    let width = found.expect("a width where the deep pane folds Sort and the other doesn't");
+    let levels = arke_core::path::breadcrumbs(std::path::Path::new(DEEP)).len();
+    let shown = left.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+    assert_eq!(
+        shown, levels,
+        "{width} px: Sort went first, the path keeps its levels"
+    );
+    // The right pane, drawn last, still draws its Sort button.
+    let sort = bounds(cx, "sort-options");
+    assert!(
+        sort.left() > px(f32::from(width) / 2.),
+        "{width} px: {sort:?}"
+    );
+}
+
+/// Narrows the window until the right pane of a split tab folds synchronized browsing and
+/// compare into "⋯" with its path whole, checking on the way that its path keeps its levels while
+/// they are drawn and that Sort went first. Returns the width.
+fn fold_the_right_toggles(cx: &mut VisualTestContext, right: &Entity<Explorer>) -> u16 {
+    let levels = arke_core::path::breadcrumbs(std::path::Path::new(OTHER)).len();
+    let state =
+        |cx: &mut VisualTestContext| right.update(cx, |v, _| (v.row_fold, v.row_debug_for_test()));
+    let mut found = None;
+    for width in (600..=1800_u16).rev().step_by(10) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        settle(cx);
+        let (fold, row) = state(cx);
+        let shown = right.update_in(cx, |v, window, _| v.crumb_labels_for_test(window).len());
+        let at = format!("{width} px: {fold:?}, {shown} of {levels}; {row}");
+        // While the toggles are drawn, the path keeps its levels; they go after Sort.
+        assert!(
+            fold.toggles_in_more() || shown == levels,
+            "the path bar gives way last: {at}"
+        );
+        assert!(
+            !fold.toggles_in_more() || fold.sort_in_more(),
+            "Sort goes first: {at}"
+        );
+        if fold.toggles_in_more() && shown == levels {
+            found = Some(width);
+            break;
+        }
+    }
+    found.expect("a width where the right pane folds its toggles, path whole")
+}
+
+/// #474: the dual pane toggles folded into "⋯" take access keys like every other row: N for
+/// synchronized browsing and M for compare in English, written after the text in Chinese, and
+/// the key toggles them.
+#[gpui::test]
+fn the_folded_toggles_take_access_keys(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1800.);
+    let right = split(&ws, &left, cx);
+    let width = fold_the_right_toggles(cx, &right) - 60;
+    // Further in, so the Chinese texts' widths can't bring the toggles back out.
+    cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+    settle(cx);
+    let menu = |cx: &mut VisualTestContext| {
+        right.update_in(cx, Explorer::open_more_menu_for_test);
+        settle(cx);
+        let sync = t!("compare.sync_tip").into_owned();
+        let compare = t!("compare.compare_tip").into_owned();
+        right
+            .update(cx, |v, _| {
+                v.context_menu
+                    .as_ref()
+                    .map(|m| (m.key_of(&sync), m.key_of(&compare)))
+            })
+            .expect("⋯ opens the folder's menu")
+    };
+
+    rust_i18n::set_locale("en");
+    let (sync, compare) = menu(cx);
+    assert_eq!(
+        sync,
+        Some(('N', t!("compare.sync_tip").into_owned())),
+        "{width} px"
+    );
+    assert_eq!(compare, Some(('M', t!("compare.compare_tip").into_owned())));
+    cx.simulate_keystrokes("n");
+    settle(cx);
+    assert!(
+        right.update(cx, |v, _| v.context_menu.is_none()),
+        "N runs it"
+    );
+    assert!(right.update(cx, |v, _| v.pane.synced), "synchronized");
+
+    rust_i18n::set_locale("zh-TW");
+    let (sync, compare) = menu(cx);
+    assert_eq!(sync, Some(('N', "同步瀏覽(N)".to_owned())));
+    assert_eq!(compare, Some(('M', "比較資料夾(M)".to_owned())));
+    cx.simulate_keystrokes("m");
+    settle(cx);
+    rust_i18n::set_locale("en");
+    assert!(
+        right.update(cx, |v, _| v.context_menu.is_none()),
+        "M runs it"
+    );
+    assert!(right.update(cx, |v, _| v.pane.comparing), "comparing");
+}
+
+/// #474: in a split tab, the right pane (on a short path) folds Sort, then its item count, then
+/// synchronized browsing and compare into "⋯", before its path loses a level. The menu shows
+/// them checked while on, and they toggle as the buttons do.
+#[gpui::test]
+fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
+    let (ws, left, cx) = open_deep(cx, 1800.);
+    let right = split(&ws, &left, cx);
+    let width = fold_the_right_toggles(cx, &right);
+    assert!(
+        cx.debug_bounds("row-more").is_some(),
+        "{width} px: ⋯ holds them"
+    );
+    let sync = t!("compare.sync_tip").into_owned();
+    let compare = t!("compare.compare_tip").into_owned();
+    let menu = |cx: &mut VisualTestContext| {
+        right.update_in(cx, Explorer::open_more_menu_for_test);
+        settle(cx);
+        right
+            .update(cx, |v, _| {
+                v.context_menu
+                    .as_ref()
+                    .map(|m| (m.labels(), m.checked_labels()))
+            })
+            .expect("⋯ opens the folder's menu")
+    };
+    let (labels, checked) = menu(cx);
+    assert!(
+        labels.contains(&sync) && labels.contains(&compare),
+        "{labels:?}"
+    );
+    assert!(!checked.contains(&sync), "off: {checked:?}");
+    // Enter on synchronized browsing turns it on, as its button does, and closes the menu.
+    let slot = labels.iter().position(|l| *l == sync).expect("sync row");
+    right.update(cx, |v, cx| {
+        v.context_menu
+            .as_mut()
+            .expect("menu")
+            .highlight_for_test(slot);
+        cx.notify();
+    });
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert!(
+        right.update(cx, |v, _| v.context_menu.is_none()),
+        "the menu closes"
+    );
+    assert!(right.update(cx, |v, _| v.pane.synced), "synchronized");
+    let (_, checked) = menu(cx);
+    assert!(checked.contains(&sync), "on: {checked:?}");
+}
+
+/// #538: while the window narrows a frame at a time (as a resize does, or the preview pane sliding
+/// in), the path bar's levels fold into "…" and the drive stays whole in every frame. The levels
+/// are decided from the bar's width on the frame before, so they come out a little over; the
+/// middle levels and the current folder take that, never the drive's short name.
+#[gpui::test]
+fn the_drive_stays_whole_while_the_path_folds(cx: &mut TestAppContext) {
+    let (_ws, _view, cx) = open_deep(cx, 1600.);
+    let drive = bounds(cx, "crumb-0").size.width;
+    let mut folded = false;
+    for width in (600..=1600_u16).rev().step_by(23) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        // One frame per size, as an animation draws: no settling in between.
+        cx.run_until_parked();
+        if bounds(cx, "path-bar").size.width < px(260.) {
+            break;
+        }
+        let crumb = cx
+            .debug_bounds("crumb-0")
+            .unwrap_or_else(|| panic!("{width} px: the drive is drawn"));
+        assert!(
+            near(crumb.size.width, drive, 0.5),
+            "{width} px: the drive is {crumb:?}, whole {drive:?}"
+        );
+        folded |= cx.debug_bounds("crumb-more").is_some();
+    }
+    assert!(folded, "the path folded on the way");
+}
+
+/// Resizes the window and draws the way the platform does: a frame at the new size, then one
+/// for each next-frame request, and no other. [`settle`] refreshes on its own, which hid a row
+/// that asked for its second frame while drawing, where the request is dropped (#528).
+fn resize_like_the_platform(cx: &mut VisualTestContext, width: f32) {
+    cx.simulate_resize(size(px(width), px(650.)));
+    cx.run_until_parked();
+    for _ in 0..8 {
+        if cx.update(gpui::Window::simulate_next_frame) == 0 {
+            break;
+        }
+        cx.run_until_parked();
+    }
+}
+
+/// What the pane row drew last: which of one item's buttons, "⋯", the pill, and whether the
+/// path bar collapsed levels into "…".
+fn row_state(cx: &mut VisualTestContext) -> ([bool; 5], bool, bool, bool) {
+    let drawn = ONE_ITEM_BUTTONS.map(|id| cx.debug_bounds(id).is_some());
+    let more = cx.debug_bounds("sel-more").is_some();
+    let pill = cx.debug_bounds("sel-count").is_some();
+    let elided = cx.debug_bounds("crumb-more").is_some();
+    (drawn, more, pill, elided)
+}
+
+/// #528: as the window narrows step by step, each step's row is laid out for its own width at
+/// once, not the width before: the path bar keeps every level while any selection button is
+/// drawn, and drawing more frames changes nothing. Before, the path bar and the selection were
+/// laid out a resize step behind, eliding the path next to buttons.
+#[gpui::test]
+fn the_pane_row_keeps_up_with_a_resize(cx: &mut TestAppContext) {
+    let (_ws, view, cx) = open_deep(cx, 1600.);
+    select_one(cx, &view);
+    for width in (600..=1600_u16).rev().step_by(25) {
+        resize_like_the_platform(cx, f32::from(width));
+        let now = row_state(cx);
+        let (drawn, _, _, elided) = now;
+        assert!(
+            !elided || !drawn.contains(&true),
+            "{width} px: buttons {drawn:?} next to a collapsed path bar"
+        );
+        settle(cx);
+        assert_eq!(
+            row_state(cx),
+            now,
+            "{width} px: settled on the first frames"
+        );
+    }
+}
+
+/// #388, #528: the selection's buttons moved into "⋯" are still in reach from the keyboard: F6 to
+/// the pane row, the arrows to "⋯", Enter opens the menu with Cut, Copy, Rename and Delete.
 #[gpui::test]
 fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
     let (ws, left, cx) = open_deep(cx, 1000.);
@@ -501,7 +962,7 @@ fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
     select(cx, &view, true);
     assert!(
         cx.debug_bounds("sel-more").is_some(),
-        "folded at this width"
+        "buttons in ⋯ at this width"
     );
     view.update_in(cx, Explorer::focus_toolbar);
     settle(cx);
@@ -540,16 +1001,16 @@ fn the_folded_selection_opens_from_the_keyboard(cx: &mut TestAppContext) {
         t!("menu.rename"),
         t!("menu.delete")
     );
-    assert_eq!(labels.last(), Some(&row), "{labels:?}");
+    assert!(labels.contains(&row), "{labels:?}");
 }
 
-/// A split pane in a small window has no room for the selection's buttons: they fold into "● 3"
-/// and "⋯", which opens the selection's menu. A wide pane keeps the buttons.
+/// A split pane in a small window has no room for any of the selection's buttons: they all fold
+/// into "● 3" and "⋯", which opens the selection's menu. A wide pane keeps the buttons.
 #[gpui::test]
 fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext) {
-    // Wide enough for the deep path to show every level with the buttons out; at 1200 it fits
-    // only with them folded.
-    let (ws, left, cx) = open_deep(cx, 1600.);
+    // Wide enough for the deep path to show every level with the buttons and the view tools
+    // out.
+    let (ws, left, cx) = open_deep(cx, 2000.);
     cx.simulate_keystrokes("ctrl-a");
     settle(cx);
     assert!(
@@ -568,7 +1029,7 @@ fn a_narrow_pane_folds_the_selection_actions_into_a_menu(cx: &mut TestAppContext
             .any(|v| v.update(cx, |v, _| !v.selection.is_empty())),
         "a pane with a selection"
     );
-    assert!(cx.debug_bounds("sel-more").is_some(), "folded");
+    assert!(folded(cx), "folded");
     let actions = bounds(cx, "selection-actions");
     assert!(
         actions.size.width < px(100.),

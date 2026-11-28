@@ -1,12 +1,17 @@
 //! Column view (like Finder's columns): parent | current folder | preview.
 //!
 //! - Left column lists the parent folder with the current folder marked; clicking another folder
-//!   goes there.
+//!   goes there. At a drive root, which has no parent, it lists the computer's drives instead
+//!   (#523): the drives of the sidebar's This PC, the current one marked.
 //! - Middle column is the current folder (names only); Left goes up, Right enters a folder.
 //! - Right column shows the preview without opening the preview pane.
 //!
-//! The parent is listed in the background (`Fs::read_dir`, never on the UI thread) and only when
-//! the folder changes.
+//! The parent has its own [`DirService`], like an expanded folder of the Details tree: listed off
+//! the UI thread with the tab's sort and hidden-items setting, then watched, so items copied or
+//! moved into it, or changed by other programs, show up (#524). It is listed again only when the
+//! parent changes (moving among the folders it lists costs nothing), on F5 and when hidden items
+//! are toggled, and its watch stops once the parent changes or the column view is left. A listing
+//! that fails says why in the column and is tried again on the next navigation or F5.
 //!
 //! The parent and current columns can be sized like Finder's: drag the divider on a column's right
 //! edge (the current column's is the preview's edge), double-click it to fit the column to its
@@ -14,26 +19,30 @@
 //! column show in full in a tooltip.
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arke_core::filetype::FileKind;
-use arke_core::{Entry, NavKind};
+use arke_core::{DeltaOutcome, DirModel, DirService, Entry, IoEvent, NavKind, service};
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, ExternalPaths, MouseButton, MouseDownEvent, Pixels,
-    ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, Div, Entity, ExternalPaths, MouseDownEvent, Pixels,
+    ScrollStrategy, SharedString, UniformListScrollHandle, Window, div, prelude::*, px, svg,
     uniform_list,
 };
+use rust_i18n::t;
 
 use super::view::listed_visual;
 use super::{
     AppEvent, DraggedFiles, Explorer, ViewMode, accepts_drop, drop_external_into, drop_into,
-    layout, report_drop_target, spawn_thread,
+    layout, report_drop_target,
 };
+use crate::assets::Icon;
 use crate::media::MediaKey;
 use crate::prefs::ViewColumn;
-use crate::press_guard::is_double_click;
 use crate::settings::Density;
+use crate::shell::{Place, PlaceKind};
+use crate::splitter::{DragEnd, Splitter};
 use crate::theme;
 
 /// Default width of the left (parent) column
@@ -44,15 +53,59 @@ pub(super) fn parent_w() -> gpui::Pixels {
 /// widest one without shaping every name of a huge folder.
 const FIT_CANDIDATES: usize = 256;
 
-/// The parent column's divider being dragged, in this pane.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DraggedParentEdge(gpui::EntityId);
+/// Tells a parent listing's events apart from an earlier one's.
+static NEXT_LISTING: AtomicU64 = AtomicU64::new(0);
+
+/// What the parent column lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ParentLevel {
+    /// The current folder's parent (for a share root, its server's shares).
+    Folder(PathBuf),
+    /// The computer's drives: the current folder is a drive root (#523).
+    Drives,
+}
 
 pub(crate) struct ParentColumn {
-    pub(crate) dir: PathBuf,
-    /// `None` while listing
-    pub(crate) entries: Option<Arc<Vec<Entry>>>,
+    pub(crate) level: ParentLevel,
+    /// The parent folder's live listing (`None` for the drives, which are the sidebar's places).
+    listing: Option<ParentListing>,
     pub(crate) scroll: UniformListScrollHandle,
+}
+
+/// The parent folder, listed and watched (#524). Dropping it stops the watch.
+struct ParentListing {
+    id: u64,
+    service: DirService,
+    model: DirModel,
+    /// The current folder has been scrolled into view.
+    placed: bool,
+    failed: Option<ParentFailure>,
+}
+
+/// Why the parent folder couldn't be listed.
+struct ParentFailure {
+    reason: String,
+    /// The current folder then: the parent is listed again once it changes.
+    from: Option<PathBuf>,
+}
+
+/// `C:\`: a drive's root, which has no parent folder.
+pub(super) fn is_drive_root(path: &Path) -> bool {
+    let mut parts = path.components();
+    let disk = match parts.next() {
+        Some(Component::Prefix(p)) => matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)),
+        _ => false,
+    };
+    disk && parts.next() == Some(Component::RootDir) && parts.next().is_none()
+}
+
+/// What the parent column lists for the folder `here`: its parent (a share root's is its
+/// server, listed as its shares), or the drives for a drive root, which has none.
+fn parent_level(here: &Path) -> Option<ParentLevel> {
+    match arke_core::path::parent(here) {
+        Some(parent) => Some(ParentLevel::Folder(parent)),
+        None => is_drive_root(here).then_some(ParentLevel::Drives),
+    }
 }
 
 impl Explorer {
@@ -60,65 +113,192 @@ impl Explorer {
         self.view_mode == ViewMode::Columns && !self.search_mode
     }
 
-    /// Called on every render: in column view, list the parent in the background after a folder
-    /// change.
+    /// Called on every render: in column view, list the parent after a folder change. Nothing to
+    /// do while it stays the parent.
     pub(super) fn sync_parent_column(&mut self) {
-        if !self.columns_active() {
+        if self.view_mode != ViewMode::Columns {
+            // Left the column view: the parent's watch goes with it.
+            self.parent_column = None;
             return;
         }
-        // A share root's parent is its server (`\\nas`), listed as its shares.
-        let Some(parent) = self.current_path().and_then(arke_core::path::parent) else {
+        if self.search_mode {
+            return;
+        }
+        let Some(level) = self.current_path().and_then(parent_level) else {
             self.parent_column = None;
             return;
         };
-        if self.parent_column.as_ref().is_some_and(|c| c.dir == parent) {
+        if self
+            .parent_column
+            .as_ref()
+            .is_some_and(|c| c.level == level)
+        {
+            // Couldn't be listed: try again once the user went to another folder.
+            let moved = self
+                .parent_column
+                .as_ref()
+                .and_then(|c| c.listing.as_ref())
+                .and_then(|l| l.failed.as_ref())
+                .is_some_and(|f| f.from.as_deref() != self.current_path());
+            if moved {
+                self.parent_relist();
+            }
             return;
         }
+        let scroll = UniformListScrollHandle::new();
+        let listing = match &level {
+            ParentLevel::Folder(dir) => Some(self.list_parent(dir.clone())),
+            ParentLevel::Drives => {
+                let here = self.current_path();
+                let current = self
+                    .column_drives()
+                    .position(|d| here.is_some_and(|h| super::same_folder(&d.path, h)));
+                if let Some(ix) = current {
+                    scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                }
+                None
+            }
+        };
+        // Replacing the column drops the previous parent's service, which stops its watch.
         self.parent_column = Some(ParentColumn {
-            dir: parent.clone(),
-            entries: None,
-            scroll: UniformListScrollHandle::new(),
-        });
-        let fs = Arc::clone(&self.services.fs);
-        let probe = self.services.shell.net_probe();
-        let tx = self.events_tx.clone();
-        let show_hidden = self.show_hidden;
-        // Sort like the middle column (folders first, case-insensitive natural order, current sort
-        // column).
-        let sort = self.sort;
-        spawn_thread("parent-column", move || {
-            let mut entries: Vec<Entry> =
-                super::path_bar::list_blocking(&*fs, probe.as_deref(), &parent)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|e| show_hidden || !e.is_hidden())
-                    .collect();
-            sort.sort(&mut entries);
-            let _ = tx.send(AppEvent::ParentColumn {
-                dir: parent,
-                entries: Arc::new(entries),
-            });
+            level,
+            listing,
+            scroll,
         });
     }
 
-    pub(super) fn handle_parent_column(
-        &mut self,
-        dir: PathBuf,
-        entries: Arc<Vec<Entry>>,
-        cx: &mut Context<Self>,
-    ) {
-        let here = self
-            .current_path()
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().into_owned());
-        let Some(column) = self.parent_column.as_mut().filter(|c| c.dir == dir) else {
+    /// Starts listing and watching `dir` for the parent column.
+    fn list_parent(&self, dir: PathBuf) -> ParentListing {
+        let id = NEXT_LISTING.fetch_add(1, Ordering::Relaxed);
+        let tx = self.events_tx.clone();
+        let mut service = DirService::new(
+            Arc::clone(&self.services.fs),
+            Arc::new(move |event| {
+                let _ = tx.send(AppEvent::ParentIo { column: id, event });
+            }),
+        );
+        if let Some(probe) = self.services.shell.net_probe() {
+            service = service.with_probe(probe);
+        }
+        // Sorted like the middle column (folders first, case-insensitive natural order, current
+        // sort column).
+        let generation = service.navigate(dir.clone(), self.tree_list_options());
+        ParentListing {
+            id,
+            service,
+            model: DirModel::new(dir, generation, self.sort),
+            placed: false,
+            failed: None,
+        }
+    }
+
+    /// The parent folder's listing, when the column lists one.
+    fn parent_listing_mut(&mut self) -> Option<&mut ParentListing> {
+        self.parent_column.as_mut().and_then(|c| c.listing.as_mut())
+    }
+
+    /// F5, hidden items toggled, or a failed listing retried: list the parent folder again (what
+    /// it shows stays until the new listing arrives).
+    pub(super) fn parent_relist(&mut self) {
+        let opts = self.tree_list_options();
+        if let Some(listing) = self.parent_listing_mut() {
+            listing.failed = None;
+            listing.model.generation = listing.service.navigate(listing.model.path.clone(), opts);
+        }
+    }
+
+    /// The sort changed: the parent column follows.
+    pub(super) fn parent_resort(&mut self) {
+        let spec = self.sort;
+        let opts = self.tree_list_options();
+        let Some(listing) = self.parent_listing_mut() else {
             return;
         };
-        if let Some(ix) = here.and_then(|h| entries.iter().position(|e| *e.name == *h)) {
-            column.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        let model = &mut listing.model;
+        if model.sorted_by == spec {
+            return;
         }
-        column.entries = Some(entries);
+        if model.entries.len() <= super::tree::INLINE_RESORT_MAX {
+            let sorted = service::resort(&model.entries, spec);
+            model.replace_sorted(Arc::new(sorted), spec);
+        } else {
+            model.generation = listing.service.navigate(model.path.clone(), opts);
+        }
+    }
+
+    /// A listing, change or failure for the parent column's folder.
+    pub(super) fn handle_parent_io(&mut self, id: u64, event: IoEvent, cx: &mut Context<Self>) {
+        let opts = self.tree_list_options();
+        let here = self.current_path().map(Path::to_path_buf);
+        let here_name = here.as_deref().and_then(arke_core::path::leaf_name);
+        let Some(column) = self.parent_column.as_mut() else {
+            return;
+        };
+        let Some(listing) = column.listing.as_mut().filter(|l| l.id == id) else {
+            return;
+        };
+        let current = listing.service.current_gen();
+        let relist = match event {
+            IoEvent::Listing {
+                generation,
+                entries,
+                sorted_by,
+                complete,
+                ..
+            } if generation == current => {
+                listing.failed = None;
+                let outcome = listing.model.set_snapshot(entries, sorted_by, complete);
+                if !listing.placed
+                    && let Some(ix) = here_name.and_then(|name| listing.model.index_of(&name))
+                {
+                    column.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                    listing.placed = true;
+                }
+                outcome == DeltaOutcome::NeedsRescan
+            }
+            IoEvent::Delta { generation, delta } if generation == current => {
+                listing.model.apply_delta(delta) == DeltaOutcome::NeedsRescan
+            }
+            IoEvent::NeedsRescan { generation } if generation == current => true,
+            IoEvent::ListFailed {
+                generation,
+                path,
+                error,
+                ..
+            } if generation == current => {
+                log::warn!("parent column: listing {} failed: {error}", path.display());
+                listing.failed = Some(ParentFailure {
+                    reason: error,
+                    from: here,
+                });
+                false
+            }
+            // Stale: an earlier listing of this folder.
+            _ => return,
+        };
+        if relist {
+            listing.model.generation = listing.service.navigate(listing.model.path.clone(), opts);
+        }
+        // A listing requested before the sort last changed arrives in the old order.
+        self.parent_resort();
         cx.notify();
+    }
+
+    /// The drives the column lists at a drive root: the ones under This PC, mapped network
+    /// drives included (each is a drive root too).
+    fn column_drives(&self) -> impl Iterator<Item = &Place> {
+        self.places
+            .iter()
+            .filter(|p| matches!(p.kind, PlaceKind::Drive { .. }))
+    }
+
+    /// Height of a parent column row.
+    fn parent_row_h(&self) -> Pixels {
+        if self.density == Density::Compact {
+            theme::h_row_compact()
+        } else {
+            theme::h_row_tight()
+        }
     }
 
     /// Asks for the side column's icons (queued after the middle column's) and returns the ones
@@ -146,10 +326,11 @@ impl Explorer {
         let Some(column) = &self.parent_column else {
             return Vec::new();
         };
-        let Some(entries) = column.entries.clone() else {
-            return Vec::new();
+        let Some(listing) = &column.listing else {
+            return self.render_drive_rows(range, window, cx);
         };
-        let dir = column.dir.clone();
+        let entries = Arc::clone(&listing.model.entries);
+        let dir = listing.model.path.clone();
         let here = self.current_path().map(Path::to_path_buf);
         let shares = super::view::lists_shares(Some(&dir));
         // System icons for .exe/.lnk/.ico like the middle column, loaded after it so they don't
@@ -171,11 +352,7 @@ impl Explorer {
         };
         let show_ext = self.show_extensions;
         let width = self.parent_column_drawn();
-        let parent_row_h = if self.density == Density::Compact {
-            theme::h_row_compact()
-        } else {
-            theme::h_row_tight()
-        };
+        let parent_row_h = self.parent_row_h();
         let me = cx.entity();
         let start = range.start;
         range
@@ -247,6 +424,71 @@ impl Explorer {
             .collect()
     }
 
+    /// Rows of the drives (#523): like folder rows, with the sidebar's drive icons and names. A
+    /// drop on a drive goes into it, as on the sidebar's drive.
+    fn render_drive_rows(
+        &self,
+        range: Range<usize>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let drives: Vec<(PathBuf, SharedString, Icon, bool)> = {
+            let here = self.current_path();
+            self.column_drives()
+                .enumerate()
+                .filter(|(ix, _)| range.contains(ix))
+                .map(|(_, place)| {
+                    let icon = if matches!(place.kind, PlaceKind::Drive { remote: true, .. }) {
+                        Icon::NetDrive
+                    } else {
+                        Icon::Drive
+                    };
+                    let current = here.is_some_and(|h| super::same_folder(&place.path, h));
+                    let label = crate::place_names::place_label(&self.place_names, place);
+                    (place.path.clone(), label.into(), icon, current)
+                })
+                .collect()
+        };
+        let width = self.parent_column_drawn();
+        let row_h = self.parent_row_h();
+        let me = cx.entity();
+        let start = range.start;
+        drives
+            .into_iter()
+            .enumerate()
+            .map(|(i, (root, label, icon, current))| {
+                let ix = start + i;
+                let cut = name_width(window, &label) > width - parent_row_chrome(true);
+                let open = root.clone();
+                let tip = label.clone();
+                let row = div()
+                    .id(("parent-drive", ix))
+                    .debug_selector(move || format!("parent-drive-{ix}"))
+                    .when(cut, |d| d.tooltip(super::view::tooltip(tip)))
+                    .relative()
+                    .h(row_h)
+                    .px(theme::s_8())
+                    .flex()
+                    .items_center()
+                    .gap(theme::s_8())
+                    .rounded(theme::r_8())
+                    .cursor_pointer()
+                    // The drive shown on the right: neutral selection, like the folder rows.
+                    .when(current, |d| d.bg(theme::selection()))
+                    .when(!current, |d| d.hover(|s| s.bg(theme::wash())))
+                    .text_color(theme::text())
+                    .child(crate::assets::tinted(icon, theme::icon(), theme::text_muted()))
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(chevron());
+                accept_drops(row, root, true, me.clone())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.navigate(open.clone(), NavKind::New, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     /// Left column of the column view.
     pub(super) fn render_parent_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let column = div()
@@ -262,22 +504,38 @@ impl Explorer {
         let Some(parent) = &self.parent_column else {
             return column.into_any_element();
         };
-        // The empty space takes drops for the folder the column shows, like the list's own.
-        let column = accept_drops(column, parent.dir.clone(), false, cx.entity());
-        let Some(entries) = &parent.entries else {
-            return column
-                .items_center()
-                .justify_center()
-                .text_size(theme::fs_12())
-                .text_color(theme::text_subtle())
-                .child(rust_i18n::t!("info.loading").to_string())
-                .into_any_element();
+        let (column, len) = match &parent.listing {
+            Some(listing) => {
+                let dir = &listing.model.path;
+                // The empty space takes drops for the folder the column shows, like the list's
+                // own.
+                let column = accept_drops(column, dir.clone(), false, cx.entity());
+                if let Some(failed) = &listing.failed {
+                    return parent_failed(column, dir, &failed.reason);
+                }
+                let model = &listing.model;
+                if model.entries.is_empty() {
+                    return if model.complete {
+                        parent_empty(column, dir)
+                    } else {
+                        column
+                            .items_center()
+                            .justify_center()
+                            .text_size(theme::fs_12())
+                            .text_color(theme::text_subtle())
+                            .child(t!("info.loading").to_string())
+                            .into_any_element()
+                    };
+                }
+                (column, model.entries.len())
+            }
+            None => (column, self.column_drives().count()),
         };
         column
             .child(
                 uniform_list(
                     "parent-column",
-                    entries.len(),
+                    len,
                     cx.processor(|this, range: Range<usize>, window, cx| {
                         this.render_parent_rows(range, window, cx)
                     }),
@@ -287,6 +545,25 @@ impl Explorer {
                 .flex_1(),
             )
             .into_any_element()
+    }
+
+    /// The names the parent column shows, for fitting its width.
+    fn parent_shown_names(&self) -> Vec<SharedString> {
+        let Some(column) = &self.parent_column else {
+            return Vec::new();
+        };
+        match &column.listing {
+            Some(listing) => listing
+                .model
+                .entries
+                .iter()
+                .map(|e| super::view::shown_name(e, self.show_extensions))
+                .collect(),
+            None => self
+                .column_drives()
+                .map(|p| crate::place_names::place_label(&self.place_names, p).into())
+                .collect(),
+        }
     }
 
     /// Middle column rows show only the name; folders get a trailing arrow.
@@ -348,18 +625,19 @@ impl Explorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let entries = match col {
-            ViewColumn::Parent => self.parent_column.as_ref().and_then(|c| c.entries.clone()),
-            ViewColumn::Current => self.view(),
-        };
-        let Some(entries) = entries.filter(|e| !e.is_empty()) else {
-            return;
-        };
         let show_ext = self.show_extensions;
-        let mut names: Vec<SharedString> = entries
-            .iter()
-            .map(|e| super::view::shown_name(e, show_ext))
-            .collect();
+        let mut names: Vec<SharedString> = match col {
+            ViewColumn::Parent => self.parent_shown_names(),
+            ViewColumn::Current => self.view().map_or_else(Vec::new, |entries| {
+                entries
+                    .iter()
+                    .map(|e| super::view::shown_name(e, show_ext))
+                    .collect()
+            }),
+        };
+        if names.is_empty() {
+            return;
+        }
         names.sort_unstable_by_key(|n| std::cmp::Reverse(n.chars().count()));
         names.truncate(FIT_CANDIDATES);
         let widest = names
@@ -448,61 +726,47 @@ impl Explorer {
     /// left padding it covers, so rows on either side keep their clicks): drag to size the
     /// column, double-click to fit it to its names.
     pub(super) fn render_parent_divider(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let dragging = self.view_column_resized == Some(ViewColumn::Parent) && cx.has_active_drag();
-        div()
-            .id("parent-column-resize")
+        let hit = div()
             .absolute()
             .top_0()
             .bottom_0()
             .left(self.parent_column_drawn() - theme::s_4())
             .w(theme::s_8())
             // Presses stay here: the list under it would clear the selection.
-            .occlude()
-            .cursor_col_resize()
-            .group("parent-column-resize")
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(theme::s_4() - px(1.))
-                    .w(px(2.))
-                    .when(dragging, |d| d.bg(theme::signal()))
-                    .when(!dragging, |d| {
-                        d.group_hover("parent-column-resize", |s| s.bg(theme::signal_line()))
-                    }),
-            )
+            .occlude();
+        let line = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(theme::s_4() - px(1.))
+            .w(px(2.));
+        let dragging = matches!(self.view_column_drag, Some((ViewColumn::Parent, ..)));
+        Splitter::new("parent-column-resize", gpui::CursorStyle::ResizeColumn)
+            .dragging(dragging)
             // Like the preview's edge: the drag moves the divider by as much as the cursor moved
-            // since the press, so it neither jumps nor lags by the drag threshold.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, _, _| {
-                    this.view_column_drag =
-                        Some((ViewColumn::Parent, e.position.x, this.parent_column_drawn()));
-                }),
-            )
-            .on_drag(DraggedParentEdge(cx.entity_id()), |_, _, _, cx| {
-                cx.new(|_| super::details::ColumnDragView)
-            })
-            .on_drag_move(cx.listener(
-                |this, e: &gpui::DragMoveEvent<DraggedParentEdge>, _, cx| {
-                    if e.drag(cx).0 != cx.entity_id() {
-                        return;
-                    }
-                    if let Some((ViewColumn::Parent, from, start)) = this.view_column_drag {
-                        this.drag_view_column(
-                            ViewColumn::Parent,
-                            start + e.event.position.x - from,
-                            cx,
-                        );
-                    }
-                },
-            ))
-            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                if is_double_click(e.click_count()) {
-                    this.fit_view_column(ViewColumn::Parent, window, cx);
+            // since the press, so it neither jumps nor lags.
+            .on_start(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                this.activate_on_press(cx);
+                this.view_column_drag =
+                    Some((ViewColumn::Parent, e.position.x, this.parent_column_drawn()));
+            }))
+            .on_double_click(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                this.activate_on_press(cx);
+                this.fit_view_column(ViewColumn::Parent, window, cx);
+            }))
+            .on_drag(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
+                if let Some((ViewColumn::Parent, from, start)) = this.view_column_drag {
+                    this.drag_view_column(ViewColumn::Parent, start + e.position.x - from, cx);
                 }
             }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| {
+                if matches!(this.view_column_drag, Some((ViewColumn::Parent, ..))) {
+                    this.view_column_drag = None;
+                    this.save_view_column_widths(cx);
+                    cx.notify();
+                }
+            }))
+            .render(hit, line)
     }
 }
 
@@ -532,6 +796,60 @@ pub(super) fn accept_drops<E: InteractiveElement + IntoElement>(
         })
 }
 
+/// The parent column when its folder couldn't be listed: why, like the list's own error page.
+fn parent_failed(column: Div, dir: &Path, reason: &str) -> AnyElement {
+    let name = arke_core::path::leaf_name(dir).unwrap_or_else(|| dir.display().to_string());
+    let icon = svg()
+        .path(Icon::Close.path())
+        .size(theme::s_24())
+        .text_color(theme::danger())
+        .into_any_element();
+    column
+        .child(
+            div()
+                .debug_selector(|| "parent-column-error".to_owned())
+                .flex_1()
+                .flex()
+                .flex_col()
+                .px(theme::s_12())
+                .text_center()
+                .child(Explorer::empty_state(
+                    icon,
+                    t!("list.failed_title", name = name).into_owned(),
+                    Some(reason.to_owned()),
+                )),
+        )
+        .into_any_element()
+}
+
+/// The parent column when its folder lists nothing (all hidden, or a server without shares),
+/// like the list's empty state.
+fn parent_empty(column: Div, dir: &Path) -> AnyElement {
+    let state = if super::view::lists_shares(Some(dir)) {
+        Explorer::empty_state(
+            crate::assets::tinted(Icon::NetDrive, theme::scaled_px(40.), theme::text_muted()),
+            t!("list.no_shares").into_owned(),
+            None,
+        )
+    } else {
+        Explorer::empty_state(
+            super::kind_icon(FileKind::Folder, theme::scaled_px(40.)),
+            t!("list.empty").into_owned(),
+            None,
+        )
+    };
+    column
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .px(theme::s_12())
+                .child(state),
+        )
+        .into_any_element()
+}
+
 /// Room a parent column row takes besides its name: the column's border, the list's and the
 /// row's padding, the icon, and the folder arrow (`chevron`).
 fn parent_row_chrome(chevron: bool) -> Pixels {
@@ -558,10 +876,52 @@ fn chevron() -> impl IntoElement {
 #[cfg(test)]
 impl Explorer {
     pub(crate) fn parent_column_names(&self) -> Vec<String> {
+        let Some(listing) = self
+            .parent_column
+            .as_ref()
+            .and_then(|c| c.listing.as_ref())
+            .filter(|l| l.failed.is_none())
+        else {
+            return Vec::new();
+        };
+        listing
+            .model
+            .entries
+            .iter()
+            .map(|e| e.name.to_string())
+            .collect()
+    }
+
+    /// The drives the parent column lists at a drive root, and which of them is current; `None`
+    /// when it lists a folder.
+    pub(crate) fn parent_column_drives(&self) -> Option<(Vec<PathBuf>, Option<usize>)> {
+        let column = self.parent_column.as_ref()?;
+        if column.listing.is_some() {
+            return None;
+        }
+        let here = self.current_path();
+        let drives: Vec<PathBuf> = self.column_drives().map(|d| d.path.clone()).collect();
+        let current = drives
+            .iter()
+            .position(|d| here.is_some_and(|h| super::same_folder(d, h)));
+        Some((drives, current))
+    }
+
+    /// Why the parent column's folder couldn't be listed.
+    pub(crate) fn parent_column_error(&self) -> Option<String> {
         self.parent_column
             .as_ref()
-            .and_then(|c| c.entries.as_ref())
-            .map_or_default(|e| e.iter().map(|e| e.name.to_string()).collect())
+            .and_then(|c| c.listing.as_ref())
+            .and_then(|l| l.failed.as_ref())
+            .map(|f| f.reason.clone())
+    }
+
+    /// The folder the parent column lists and watches (`None`: no service, so no watch).
+    pub(crate) fn parent_column_lists(&self) -> Option<PathBuf> {
+        self.parent_column
+            .as_ref()
+            .and_then(|c| c.listing.as_ref())
+            .map(|l| l.model.path.clone())
     }
 
     /// Which of the current column's names are cut off (and get a tooltip).

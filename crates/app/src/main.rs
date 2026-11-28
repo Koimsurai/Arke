@@ -101,6 +101,7 @@ mod shelf;
 mod shell;
 mod shell_host;
 mod slider;
+mod splitter;
 mod spring;
 mod text_input;
 mod theme;
@@ -689,7 +690,7 @@ fn app_main(mut args: Args) {
         }
         // Auto-update: delete the old binary left from last time; check a bit after startup so it
         // doesn't compete, then every hour while Arke keeps running (it can stay in the
-        // notification area for days). `auto_check` only checks when 20 hours have passed.
+        // notification area for days). `auto_check` skips a tick that comes too soon after a check.
         // A download that is waiting (from before Windows restarted) waits again; with
         // automatic updates on it goes in when Arke quits (`update_quiet.rs`).
         if bench.is_none() {

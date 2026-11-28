@@ -29,6 +29,7 @@ use crate::explorer::{Explorer, ExplorerEvent, PaneInfo, Services, StartClock, k
 use crate::net_dialog::{NetDialog, NetDialogEvent, NetDialogKind};
 use crate::palette::{Candidate, Command, LocationPalette, PaletteEvent, Source, Target};
 use crate::settings::{NewTabAction, SettingsStore, TabLayout};
+use crate::splitter::{DragEnd, Splitter};
 use crate::theme::{self, UiFont as _};
 
 #[path = "workspace_backup.rs"]
@@ -69,6 +70,8 @@ mod tabdrag;
 mod tabghost;
 #[path = "workspace_tabmove.rs"]
 mod tabmove;
+#[path = "workspace_tabstrip.rs"]
+mod tabstrip;
 #[path = "workspace_uninstall.rs"]
 mod uninstall_page;
 #[path = "workspace_update.rs"]
@@ -79,7 +82,9 @@ mod welcome;
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, flyout_switch};
-pub(crate) use sidebar::{leave_drive_everywhere, reload_places_everywhere};
+pub(crate) use sidebar::{
+    leave_drive_everywhere, reload_places_everywhere, reload_remote_everywhere,
+};
 pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
@@ -280,6 +285,48 @@ const fn index_after_move(ix: usize, from: usize, to: usize) -> usize {
 }
 
 #[cfg(test)]
+mod sign_in_reopen_tests {
+    use super::reopen_path_after_sign_in as reopen;
+    use std::path::PathBuf;
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn fills_in_the_user_that_signed_in() {
+        let done = p("http://arke@127.0.0.1:63110");
+        assert_eq!(
+            reopen(p("http://127.0.0.1:63110/docs/a"), &done),
+            p("http://arke@127.0.0.1:63110/docs/a")
+        );
+        assert_eq!(
+            reopen(p("http://127.0.0.1:63110"), &done),
+            p("http://arke@127.0.0.1:63110")
+        );
+        assert_eq!(
+            reopen(p("http://other@127.0.0.1:63110/docs"), &done),
+            p("http://arke@127.0.0.1:63110/docs")
+        );
+    }
+
+    #[test]
+    fn leaves_everything_else_alone() {
+        let done = p("http://arke@127.0.0.1:63110/x");
+        for same in [
+            "http://arke@127.0.0.1:63110/docs",
+            "http://127.0.0.1:63111/docs",
+            "https://127.0.0.1:63110/docs",
+            "http://example.com:63110/docs",
+            r"\\server\share\docs",
+            r"C:\docs",
+        ] {
+            assert_eq!(reopen(p(same), &done), p(same), "{same}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod tab_order_tests {
     use super::index_after_move;
 
@@ -421,7 +468,7 @@ pub(crate) struct Workspace {
     settings_panel: Option<settings_panel::SettingsPage>,
     /// Open Recycle Bin page.
     recycle_page: Option<recycle_page::RecyclePage>,
-    home_page: Option<home_page::HomeView>,
+    home_pages: Vec<home_page::HomeView>,
     whats_new: Option<whats_new_page::WhatsNewView>,
     /// The tab a page tab is being opened from, until the page takes it as its opener.
     page_opener: Option<gpui::EntityId>,
@@ -633,9 +680,10 @@ impl Workspace {
                 }
                 // Reopen where sign-in was asked for (that folder, not just the server), or open
                 // the new location in the active tab.
-                let (view, path) = slot
-                    .after
-                    .unwrap_or_else(|| (self.active_view().clone(), url));
+                let (view, path) = match slot.after {
+                    Some((view, path)) => (view, reopen_path_after_sign_in(path, &place.url)),
+                    None => (self.active_view().clone(), url),
+                };
                 view.update(cx, |v, cx| v.navigate(path, arke_core::NavKind::New, cx));
             }
         }
@@ -663,6 +711,31 @@ impl Workspace {
     pub(crate) fn net_dialog_for_test(&self) -> Option<Entity<NetDialog>> {
         self.net_dialog.as_ref().map(|slot| slot.dialog.clone())
     }
+}
+
+/// Where to reopen `asked` after signing in at `signed_in`: the same folder, but with the user
+/// that signed in when it is on the same server and typed without that user (an address like
+/// `http://host/` has no password saved under it, so asking again would never end).
+pub(crate) fn reopen_path_after_sign_in(asked: PathBuf, signed_in: &Path) -> PathBuf {
+    use arke_core::remote::RemoteUrl;
+    let (Some(url), Some(done)) = (
+        RemoteUrl::from_path(&asked),
+        RemoteUrl::from_path(signed_in),
+    ) else {
+        return asked;
+    };
+    if url.scheme != done.scheme
+        || url.host != done.host
+        || url.port != done.port
+        || url.user == done.user
+    {
+        return asked;
+    }
+    RemoteUrl {
+        user: done.user,
+        ..url
+    }
+    .to_path()
 }
 
 /// Actual accent color for the setting; `None` is the default Arke orange.
@@ -861,7 +934,7 @@ impl Workspace {
             _saved_workspaces: saved_workspaces,
             settings_panel: None,
             recycle_page: None,
-            home_page: None,
+            home_pages: Vec::new(),
             whats_new: None,
             page_opener: None,
             startup: if start_default {
@@ -1061,7 +1134,7 @@ impl Workspace {
             if saved.home {
                 // Home over its folder, as it was left; back shows the folder.
                 self.active = tab_ix;
-                self.open_home_as(false, false, window, cx);
+                self.open_home_fresh(false, false, window, cx);
             }
         }
         ids
@@ -1069,7 +1142,6 @@ impl Workspace {
 
     /// Snapshot of this window's tabs for the last session. Panes without a path are skipped.
     pub(crate) fn session_snapshot(&self, cx: &App) -> crate::settings::Session {
-        let home_tab = self.home_page.as_ref().and_then(|p| self.tab_of(&p.owner));
         let shown = self.saved_shown.as_ref();
         let mut tabs: Vec<crate::settings::SessionTab> = Vec::with_capacity(self.tabs.len());
         let mut shown_tabs = Vec::new();
@@ -1090,7 +1162,7 @@ impl Workspace {
                 ratio: tab.ratio,
                 pinned: tab.pinned,
                 synced: tab.synced && panes.len() > 1,
-                home: home_tab == Some(ix),
+                home: self.tab_has_home(ix),
                 panes,
             });
         }
@@ -1452,6 +1524,19 @@ impl Workspace {
         self.history_landed(source.entity_id(), kind, cx);
     }
 
+    /// A remote folder changed (servers send no change notifications): every pane showing it
+    /// relists.
+    pub(crate) fn reload_remote(&self, path: &Path, cx: &mut Context<Self>) {
+        let views: Vec<_> = self
+            .tabs
+            .iter()
+            .flat_map(|t| t.panes.iter().map(|p| p.view.clone()))
+            .collect();
+        for view in views {
+            view.update(cx, |v, cx| v.reload_if_showing(path, cx));
+        }
+    }
+
     fn on_explorer_event(
         &mut self,
         source: &Entity<Explorer>,
@@ -1531,16 +1616,7 @@ impl Workspace {
             }
             ExplorerEvent::ToggleCompare => self.toggle_compare(tab_ix, cx),
             ExplorerEvent::SelectDifferences => self.select_differences(tab_ix, cx),
-            ExplorerEvent::RemoteChanged(path) => {
-                let views: Vec<_> = self
-                    .tabs
-                    .iter()
-                    .flat_map(|t| t.panes.iter().map(|p| p.view.clone()))
-                    .collect();
-                for view in views {
-                    view.update(cx, |v, cx| v.reload_if_showing(path, cx));
-                }
-            }
+            ExplorerEvent::RemoteChanged(path) => self.reload_remote(path, cx),
             ExplorerEvent::WindowMenu(position) => self.open_window_menu(*position, window, cx),
             ExplorerEvent::ImportSettings(path) => {
                 self.import_settings_from_menu(path.clone(), window, cx);
@@ -1892,8 +1968,7 @@ impl Workspace {
                 // Already on Home: there is nothing left to close.
                 if !self.home_open() {
                     self.remember_closed(ix, cx);
-                    self.home_page = None;
-                    self.open_home_as(false, true, window, cx);
+                    self.open_home_fresh(false, true, window, cx);
                 }
                 return;
             }
@@ -2534,10 +2609,14 @@ impl Workspace {
         self.shared_preview = shared;
     }
 
-    /// Saves the sidebar width the drag ended on.
+    /// Saves the sidebar width the drag ended on (if one was under way).
     pub(crate) fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_resizing = false;
+        if !std::mem::take(&mut self.sidebar_resizing) {
+            log::debug!(target: "arke::splitter", "sidebar-edge: no drag under way");
+            return;
+        }
         let width = theme::sidebar_base();
+        log::debug!(target: "arke::splitter", "sidebar-edge: drag ended, width {width} saved");
         SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_width = width, cx));
         cx.notify();
     }
@@ -2572,81 +2651,44 @@ impl Workspace {
         if theme::sidebar_collapsed() {
             return None;
         }
-        let active = self.sidebar_resizing;
+        let hit = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(theme::sidebar_full_width() - px(4.))
+            .w(px(8.));
+        let line = div().h_full().w(px(2.)).mx_auto();
         Some(
-            div()
-                .id("sidebar-edge")
-                .debug_selector(|| "sidebar-edge".to_owned())
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(theme::sidebar_full_width() - px(4.))
-                .w(px(8.))
-                .cursor_col_resize()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                        if event.click_count >= 2 {
-                            Self::reset_sidebar_width(cx);
-                        } else {
-                            this.sidebar_resizing = true;
-                        }
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(
-                    div()
-                        .h_full()
-                        .w(px(2.))
-                        .mx_auto()
-                        .when(active, |d| d.bg(theme::signal()))
-                        .hover(|s| s.bg(theme::signal_line())),
-                )
+            Splitter::new("sidebar-edge", gpui::CursorStyle::ResizeColumn)
+                .dragging(self.sidebar_resizing)
+                .on_start(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.sidebar_resizing = true;
+                    log::debug!(target: "arke::splitter", "sidebar-edge: dragging");
+                    cx.notify();
+                }))
+                .on_double_click(cx.listener(|_, _: &MouseDownEvent, _, cx| {
+                    Self::reset_sidebar_width(cx);
+                }))
+                .on_drag(cx.listener(|_, e: &MouseMoveEvent, _, cx| {
+                    let base = f32::from(e.position.x) * 100. / theme::scale_pct() as f32;
+                    if theme::set_sidebar_base(base) {
+                        cx.notify();
+                    }
+                }))
+                .on_end(cx.listener(|this, _: &DragEnd, _, cx| this.finish_sidebar_drag(cx)))
+                .render(hit, line)
                 .into_any_element(),
         )
     }
 
-    fn on_mouse_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some((from_y, from_h, _)) = self.split_drag {
-            if event.pressed_button != Some(MouseButton::Left) {
-                self.finish_split_drag(cx);
-                return;
-            }
-            let height = (from_h + event.position.y - from_y).max(px(0.));
-            self.split_drag = Some((from_y, from_h, height));
-            cx.notify();
-            return;
-        }
-        if self.sidebar_resizing {
-            if event.pressed_button != Some(MouseButton::Left) {
-                self.finish_sidebar_drag(cx);
-                return;
-            }
-            let base = f32::from(event.position.x) * 100. / theme::scale_pct() as f32;
-            if theme::set_sidebar_base(base) {
-                cx.notify();
-            }
-            return;
-        }
-        if !self.resizing {
-            return;
-        }
-        if event.pressed_button != Some(MouseButton::Left) {
-            self.resizing = false;
-            return;
-        }
-        // The panes share what the tab's preview leaves.
+    /// The divider between the panes moved: they share what the tab's preview leaves at that
+    /// ratio, each keeping at least `pane_min()` so the top bar and columns don't get crushed.
+    fn drag_pane_gutter(&mut self, x: gpui::Pixels, window: &Window, cx: &mut Context<Self>) {
         let reserve = self
             .shared_preview
             .map_or(px(0.), crate::explorer::SharedPreview::reserve);
         let width = window.viewport_size().width - theme::sidebar_width() - reserve;
-        let ratio = (event.position.x - theme::sidebar_width()) / width;
-        // Keep at least pane_min() per side so the top bar and columns do not get crushed.
+        let ratio = (x - theme::sidebar_width()) / width;
         let min = (pane_min() / width).min(0.5);
         self.tabs[self.active].ratio = ratio.clamp(min, 1. - min);
         cx.notify();
@@ -2885,48 +2927,43 @@ impl Workspace {
         }
         // Zero-width divider; the hit area extends left into the gap between the two papers,
         // centered on it.
-        let resizing = self.resizing;
         let gap = theme::paper_gap();
-        let gutter = div().relative().w(px(0.)).h_full().child(
-            div()
-                .id("pane-gutter")
-                .group("pane-gutter")
-                .absolute()
-                .top_0()
-                .bottom(gap)
-                .left(-gap / 2. - theme::s_6())
-                .w(theme::s_12())
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_col_resize()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        this.resizing = true;
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                    // Double click resets to 50/50.
-                    if event.click_count() >= 2 {
-                        this.tabs[this.active].ratio = 0.5;
-                        cx.notify();
-                    }
-                }))
-                .child(
-                    div()
-                        .w(crate::theme::scaled_px(3.))
-                        .h(theme::s_32() + theme::s_8())
-                        .rounded(theme::R_FULL)
-                        .bg(if resizing {
-                            theme::signal()
-                        } else {
-                            theme::line_strong()
-                        })
-                        .group_hover("pane-gutter", |s| s.bg(theme::signal_line())),
-                ),
-        );
+        let hit = div()
+            .absolute()
+            .top_0()
+            .bottom(gap)
+            .left(-gap / 2. - theme::s_6())
+            .w(theme::s_12())
+            .flex()
+            .items_center()
+            .justify_center();
+        let pill = div()
+            .w(crate::theme::scaled_px(3.))
+            .h(theme::s_32() + theme::s_8())
+            .rounded(theme::R_FULL)
+            .bg(theme::line_strong());
+        let handle = Splitter::new("pane-gutter", gpui::CursorStyle::ResizeColumn)
+            .round(true)
+            .dragging(self.resizing)
+            .on_start(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.resizing = true;
+                cx.notify();
+            }))
+            // Double click resets to 50/50.
+            .on_double_click(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.tabs[this.active].ratio = 0.5;
+                cx.notify();
+            }))
+            .on_drag(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
+                this.drag_pane_gutter(e.position.x, window, cx);
+            }))
+            .on_end(cx.listener(|this, _: &DragEnd, _, cx| {
+                if std::mem::take(&mut this.resizing) {
+                    cx.notify();
+                }
+            }))
+            .render(hit, pill);
+        let gutter = div().relative().w(px(0.)).h_full().child(handle);
         // The divider's ratio applies to what the shared preview leaves. The right pane's box runs
         // on under the preview, and the preview sits on top of it.
         let reserve = self
@@ -3119,7 +3156,10 @@ fn hand_drag_to_windows(
     // Enter the Windows drag loop only after this mouse event is handled, outside GPUI's event
     // dispatch.
     cx.spawn(async move |cx| {
-        let end = shell.drag_out(&pending.paths, pending.image.as_ref(), after_lost_press);
+        let end = match &pending.remote {
+            Some(items) => shell.drag_out_remote(items, pending.image.as_ref(), after_lost_press),
+            None => shell.drag_out(&pending.paths, pending.image.as_ref(), after_lost_press),
+        };
         if let Err(err) = &end {
             log::warn!("drag out to another program failed: {err}");
         }
@@ -3395,22 +3435,6 @@ impl Render for Workspace {
                     window.refresh();
                 }
             })
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if this.resizing {
-                        this.resizing = false;
-                        cx.notify();
-                    }
-                    if this.sidebar_resizing {
-                        this.finish_sidebar_drag(cx);
-                    }
-                    if this.split_drag.is_some() {
-                        this.finish_split_drag(cx);
-                    }
-                }),
-            )
             .child(body)
             .children(self.render_split_drop_zone(cx))
             // Horizontal tabs: the pin zone floats under the start of the strip, where the pinned
@@ -3625,9 +3649,11 @@ impl Workspace {
                 let pinned = self.tabs[ix].pinned;
                 div()
                     .when(pinned, |d| d.w(crate::theme::scaled_px(132.)).flex_none())
+                    // Down to a width that keeps the titles apart (#533); past that the strip
+                    // scrolls.
                     .when(!pinned, |d| {
                         d.w(crate::theme::scaled_px(200.))
-                            .min_w(crate::theme::scaled_px(96.))
+                            .min_w(crate::theme::scaled_px(tabstrip::TAB_MIN_W))
                             .flex_shrink(1.)
                     })
                     .child(self.render_tab(ix, cx))
@@ -3648,6 +3674,8 @@ impl Workspace {
                 cx.notify();
             }
         }
+        // Tabs cut off: scroll buttons at both ends of the tabs say so and step to them (#541).
+        let edges = tabstrip::StripEdges::of(scroll);
         div()
             .id("tab-strip")
             .debug_selector(|| "tab-strip".to_owned())
@@ -3663,6 +3691,9 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(theme::s_4())
+            .when(edges.overflow, |d| {
+                d.child(Self::strip_scroll_button(false, edges.back, cx))
+            })
             // Too many tabs to fit: they scroll sideways (the wheel scrolls them too) instead of
             // the last ones being cut off.
             .child(
@@ -3677,6 +3708,9 @@ impl Workspace {
                     .track_scroll(scroll)
                     .children(tabs),
             )
+            .when(edges.overflow, |d| {
+                d.child(Self::strip_scroll_button(true, edges.forward, cx))
+            })
             .child(
                 div()
                     .id("strip-new-tab")
@@ -3713,6 +3747,8 @@ impl Workspace {
             )
             .child(Self::workspaces_button(cx))
             .child(sidebar::tab_layout_button(true, cx))
+            // After the tabs, so it reads their layout of this frame.
+            .child(self.strip_watch(edges))
     }
 }
 

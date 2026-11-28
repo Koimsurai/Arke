@@ -196,6 +196,10 @@ pub(crate) enum MenuCommand {
     FreeUpSpace,
     /// Put the targets on the shelf.
     AddToShelf,
+    /// Split view, from the pane row's "⋯": synchronized browsing on or off.
+    ToggleSync,
+    /// Split view, from the pane row's "⋯": compare the two folders, or stop.
+    ToggleCompare,
 }
 
 /// An app listed under "Open with": one the user added in Settings › Context menu.
@@ -258,6 +262,8 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
         C::ToggleSearchNetwork | C::SearchInFolder => Icon::Search,
         C::FreeUpSpace => Icon::Cloud,
         C::AddToShelf => Icon::Shelf,
+        C::ToggleSync => Icon::Link,
+        C::ToggleCompare => Icon::Compare,
         _ => return None,
     })
 }
@@ -730,6 +736,29 @@ const fn shift_hit(hit: AccessHit, shift: bool) -> AccessHit {
     }
 }
 
+/// Adds rows to a menu already made (what the pane row folded into "⋯", #474). A row keeps its
+/// access key only if no row already there has it, as two rows never share one (#422); "Sort by"
+/// beside a folder's Open loses its O. Sharing with a top-row button is fine, as everywhere.
+fn add_rows(entries: &mut Vec<MenuEntry>, added: Vec<MenuEntry>) {
+    let key = |entry: &MenuEntry| match entry {
+        MenuEntry::Item(row) => row.access.map(|a| a.key.to_ascii_lowercase()),
+        MenuEntry::Submenu { access, .. } => access.map(|a| a.key.to_ascii_lowercase()),
+        MenuEntry::Actions(_) | MenuEntry::Separator => None,
+    };
+    for mut entry in added {
+        if let Some(mine) = key(&entry)
+            && entries.iter().any(|row| key(row) == Some(mine))
+        {
+            match &mut entry {
+                MenuEntry::Item(row) => row.access = None,
+                MenuEntry::Submenu { access, .. } => *access = None,
+                MenuEntry::Actions(_) | MenuEntry::Separator => {}
+            }
+        }
+        entries.push(entry);
+    }
+}
+
 /// The command a click runs: Shift+click on Delete deletes permanently, as in File Explorer.
 const fn click_command(command: MenuCommand, shift: bool) -> MenuCommand {
     match command {
@@ -744,12 +773,7 @@ fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyEl
     let Some(access) = access else {
         return label.into_any_element();
     };
-    let (text, at): (SharedString, usize) = if let Some(at) = access.at {
-        (label, at)
-    } else {
-        let at = label.len() + 1;
-        (format!("{label}({})", access.key).into(), at)
-    };
+    let (text, at) = drawn_text(label, access);
     let end = at + access.key.len_utf8();
     if !cues.shown() || text.get(at..end).is_none() {
         return text.into_any_element();
@@ -764,6 +788,58 @@ fn access_text(label: SharedString, access: Option<Access>, cues: Cues) -> AnyEl
     };
     StyledText::new(text)
         .with_highlights([(at..end, underline)])
+        .into_any_element()
+}
+
+/// The text a row with `access` draws, and where the key is in it: the label, with the key
+/// after it as `(O)` in the CJK form.
+fn drawn_text(label: SharedString, access: Access) -> (SharedString, usize) {
+    if let Some(at) = access.at {
+        (label, at)
+    } else {
+        let at = label.len() + 1;
+        (format!("{label}({})", access.key).into(), at)
+    }
+}
+
+/// The key an icon button underlines in its label: only one that is a letter of it. The CJK form,
+/// `(N)` after the text, would crowd the small buttons, so [`button_key`] shows that one instead
+/// (#422).
+const fn button_text_access(access: Option<Access>) -> Option<Access> {
+    match access {
+        Some(Access { at: Some(_), .. }) => access,
+        _ => None,
+    }
+}
+
+/// The key an icon button shows beside its icon: one that isn't a letter of its label, and only
+/// while the underlines are shown.
+const fn button_key(access: Option<Access>, cues: Cues) -> Option<char> {
+    match access {
+        Some(Access { key, at: None }) if cues.shown() => Some(key),
+        _ => None,
+    }
+}
+
+/// [`button_key`] drawn as a small muted letter beside the top of the icon button's icon, like a
+/// superscript, with no box. It is laid over the button, so the button keeps its size and nothing
+/// moves when it comes and goes. Its place is set against the icon (a box the icon's size): the
+/// gap after it plus the widest letter (about 10 px) fit in the space beside the icon even in the
+/// narrowest button, about 45 px with five in a 240 px menu, so it never reaches the next button.
+fn key_badge(key: char, enabled: bool, command: MenuCommand) -> AnyElement {
+    div()
+        .debug_selector(move || format!("menu-action-key-{command:?}"))
+        .absolute()
+        .top(-theme::s_2())
+        .left(theme::icon() + theme::s_4())
+        .text_size(theme::fs_11())
+        .line_height(gpui::relative(theme::LH_TIGHT))
+        .text_color(if enabled {
+            theme::text_muted()
+        } else {
+            theme::text_disabled()
+        })
+        .child(key.to_string())
         .into_any_element()
 }
 
@@ -1127,6 +1203,19 @@ impl ContextMenu {
             .collect()
     }
 
+    /// Test helper: the access key of the top-level row `label` (upper case), and its text as
+    /// drawn (the CJK form with the key after it, as `(N)`).
+    #[cfg(test)]
+    pub(crate) fn key_of(&self, label: &str) -> Option<(char, String)> {
+        self.level(0).iter().find_map(|entry| match entry {
+            MenuEntry::Item(row) if row.label.as_ref() == label => row.access.map(|access| {
+                let text = drawn_text(row.label.clone(), access).0;
+                (access.key.to_ascii_uppercase(), text.to_string())
+            }),
+            _ => None,
+        })
+    }
+
     /// Test helper: labels at the top level (separators as `—`).
     #[cfg(test)]
     pub(crate) fn labels(&self) -> Vec<String> {
@@ -1216,6 +1305,25 @@ impl ContextMenu {
     #[cfg(test)]
     pub(crate) const fn cues_shown_for_test(&self) -> bool {
         self.cues.shown()
+    }
+
+    /// Test helper: the icon buttons of the innermost level, each with the text it draws and the
+    /// key shown beside its icon.
+    #[cfg(test)]
+    pub(crate) fn icon_row_for_test(&self) -> Vec<(String, Option<char>)> {
+        self.level(self.open.len())
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Actions(items) => Some(items),
+                _ => None,
+            })
+            .flatten()
+            .map(|i| {
+                let text = button_text_access(i.access)
+                    .map_or_else(|| i.label.clone(), |a| drawn_text(i.label.clone(), a).0);
+                (text.to_string(), button_key(i.access, self.cues))
+            })
+            .collect()
     }
 
     /// Test helper: where `level` was drawn, and how far it is scrolled.
@@ -1633,11 +1741,27 @@ impl Explorer {
             || self.on_remote(),
             |(p, _)| arke_core::remote::is_remote(p),
         );
-        let entries = if on_server {
+        let mut entries = if on_server {
             remote_menu(entries)
         } else {
             entries
         };
+        // Opened from the pane row's "⋯" with Sort folded into it (#474): its choices come along.
+        // The background menu has them anyway.
+        // The background menu has "Sort by" anyway, and while searching there is no Sort.
+        let from_more = std::mem::take(&mut self.row_fold.menu_from_more);
+        let row = self.row_fold.row.filter(|_| from_more);
+        if row.is_some_and(|row| row.sort_folded()) && !self.search_mode && !targets.is_empty() {
+            add_rows(
+                &mut entries,
+                vec![MenuEntry::Separator, self.sort_submenu()],
+            );
+        }
+        // With synchronized browsing and compare folded into it: they come along, checked while
+        // on, as the buttons show them (#474).
+        if row.is_some_and(|row| row.toggles_folded()) && self.pane.pair_toggles {
+            add_rows(&mut entries, self.dual_toggle_items());
+        }
         let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);
         // Shift held, as File Explorer: the Windows menu includes commands registered to show
         // only then (#272).
@@ -1708,6 +1832,29 @@ impl Explorer {
             key: Some("view"),
             pin: None,
         }
+    }
+
+    /// Split view's synchronized browsing and compare as menu rows, checked while on, after a
+    /// separator. A pinned tab has no synchronized browsing.
+    fn dual_toggle_items(&self) -> Vec<MenuEntry> {
+        use MenuCommand as C;
+        let mut items = vec![MenuEntry::Separator];
+        if !self.locked {
+            items.push(checked_item(
+                lab("sync", t!("compare.sync_tip")),
+                Some("Ctrl+Shift+S"),
+                C::ToggleSync,
+                self.pane.synced,
+            ));
+        }
+        items.push(checked_item(
+            lab("compare", t!("compare.compare_tip")),
+            Some("Ctrl+Shift+D"),
+            C::ToggleCompare,
+            self.pane.comparing,
+        ));
+        decorate(&mut items);
+        items
     }
 
     /// "New": a folder and a file, as in Windows' own New submenu, instead of two rows of their
@@ -2615,6 +2762,9 @@ impl Explorer {
                     cx.emit(ExplorerEvent::ImportSettings(path));
                 }
             }
+            // The same as the buttons in the pane row.
+            C::ToggleSync => cx.emit(ExplorerEvent::ToggleSync),
+            C::ToggleCompare => cx.emit(ExplorerEvent::ToggleCompare),
             C::SetBackground => {
                 if let Some((path, false)) = targets.first().cloned() {
                     crate::settings::SettingsStore::global(cx).update(cx, |store, cx| {
@@ -3929,17 +4079,30 @@ impl Explorer {
                             ))
                     })
                     .when(!enabled, |d| d.text_color(theme::text_disabled()))
+                    // The icon in a box of its size, which the key is placed against. Every
+                    // icon button has one (`decorate`).
                     .children(item.glyph.map(|glyph| {
-                        svg()
-                            .path(glyph.path())
+                        div()
+                            .relative()
+                            .flex_none()
                             .size(theme::icon())
-                            .text_color(if enabled {
-                                theme::text()
-                            } else {
-                                theme::text_disabled()
-                            })
+                            .child(svg().path(glyph.path()).size(theme::icon()).text_color(
+                                if enabled {
+                                    theme::text()
+                                } else {
+                                    theme::text_disabled()
+                                },
+                            ))
+                            .children(
+                                button_key(item.access, menu.cues)
+                                    .map(|key| key_badge(key, enabled, command)),
+                            )
                     }))
-                    .child(access_text(item.label.clone(), item.access, menu.cues))
+                    .child(access_text(
+                        item.label.clone(),
+                        button_text_access(item.access),
+                        menu.cues,
+                    ))
             }))
             .into_any_element()
     }
@@ -4782,9 +4945,16 @@ mod access_tests {
 
     const LOCALES: [&str; 7] = ["en", "zh-TW", "zh-CN", "de", "es", "pt-BR", "ja"];
 
-    /// Spanish has no key for these: every letter of their words was taken by something they
-    /// share a menu with.
-    const NO_SPANISH_KEY: [&str; 4] = ["copy_rel", "link", "keep", "free"];
+    /// No key for these: every letter of their words was taken by something they share a menu
+    /// with.
+    const NO_KEY: [(&str, &str); 6] = [
+        ("es", "copy_rel"),
+        ("es", "link"),
+        ("es", "keep"),
+        ("es", "free"),
+        ("es", "compare"),
+        ("pt-BR", "compare"),
+    ];
 
     /// The own items each menu can show at once, by their `access.*` key. An item that never shows
     /// with another (a folder's "Add to favorites" and "Remove from favorites") is in its own
@@ -4882,7 +5052,36 @@ mod access_tests {
          copy_as_path=menu.copy_as_path edit_address=menu.edit_address \
          clear_history=menu.clear_history reset_cols=menu.reset_column_order \
          drop_move=dnd.menu_move drop_copy=dnd.menu_copy drop_shortcut=dnd.menu_shortcut \
-         drop_cancel=dnd.menu_cancel";
+         drop_cancel=dnd.menu_cancel sync=compare.sync_tip compare=compare.compare_tip";
+
+    /// The pane row's "⋯" adds to a menu (#474): "Sort by" to the selection's, and in a split
+    /// tab synchronized browsing and compare to it or to the folder's.
+    fn more_menus() -> Vec<(String, String)> {
+        const SELECTION: [&str; 7] = [
+            "folder",
+            "folder_rm",
+            "file_archive",
+            "files_archives",
+            "file_image",
+            "file_json",
+            "file_lnk",
+        ];
+        MENUS
+            .iter()
+            .filter_map(|(menu, names)| {
+                let added = if menu.starts_with("background") {
+                    "sync compare"
+                } else if SELECTION.contains(menu) {
+                    // "Sort by" comes too, but keeps its key only where no row has it
+                    // (`add_rows`): beside Open, every language's is taken.
+                    "sync compare"
+                } else {
+                    return None;
+                };
+                Some((format!("{menu}, from ⋯"), format!("{names} {added}")))
+            })
+            .collect()
+    }
 
     fn letter(locale: &str, name: &str) -> Option<char> {
         let key = format!("access.{name}");
@@ -4893,13 +5092,18 @@ mod access_tests {
 
     #[test]
     fn no_two_items_of_a_menu_share_an_access_key() {
+        let menus: Vec<(String, String)> = MENUS
+            .iter()
+            .map(|(menu, names)| ((*menu).to_owned(), (*names).to_owned()))
+            .chain(more_menus())
+            .collect();
         for locale in LOCALES {
-            for (menu, names) in MENUS {
+            for (menu, names) in &menus {
                 let mut seen: Vec<(char, &str)> = Vec::new();
                 for name in names.split_whitespace() {
                     let Some(letter) = letter(locale, name) else {
                         assert!(
-                            locale == "es" && NO_SPANISH_KEY.contains(&name),
+                            NO_KEY.iter().any(|&(l, n)| l == locale && n == name),
                             "{locale}: access.{name} has no letter"
                         );
                         continue;
@@ -4908,7 +5112,7 @@ mod access_tests {
                     // A row may share its letter with a top-row button: the letter only
                     // highlights the row (`access_hit`). Two rows or two buttons may not.
                     // ("New folder" is a row in the "New" menu.)
-                    let is_button = |n: &str| BUTTONS.contains(&n) && *menu != "new_bg";
+                    let is_button = |n: &str| BUTTONS.contains(&n) && menu != "new_bg";
                     let button = is_button(name);
                     if let Some((_, other)) = seen
                         .iter()
@@ -5025,6 +5229,36 @@ mod access_tests {
             key: None,
             pin: None,
         }
+    }
+
+    /// Rows "⋯" adds keep their key only where no row has it yet (#474).
+    #[test]
+    fn rows_added_to_a_menu_give_up_a_key_a_row_has() {
+        use MenuCommand as C;
+        let mut entries = vec![
+            keyed("Open", 'o', C::Open),
+            MenuEntry::Actions(vec![button("Rename", 'm', C::Rename, true)]),
+        ];
+        add_rows(
+            &mut entries,
+            vec![
+                MenuEntry::Separator,
+                submenu("Sort by", 'o', true),
+                keyed("Synchronized browsing", 'n', C::ToggleSync),
+                keyed("Compare folders", 'm', C::ToggleCompare),
+            ],
+        );
+        let keys: Vec<Option<char>> = entries
+            .iter()
+            .map(|entry| match entry {
+                MenuEntry::Item(row) => row.access.map(|a| a.key),
+                MenuEntry::Submenu { access, .. } => access.map(|a| a.key),
+                _ => None,
+            })
+            .collect();
+        // Sort by loses the O Open has; Compare keeps the M it shares with a button.
+        assert_eq!(keys, [Some('O'), None, None, None, Some('n'), Some('m')]);
+        assert_eq!(access_hit(&entries, None, 'o'), AccessHit::Run(C::Open));
     }
 
     #[test]
@@ -5180,5 +5414,30 @@ mod access_tests {
         assert!(Cues::opened(true, false).shown());
         assert!(Cues::opened(false, true).shown());
         assert!(!Cues::default().shown());
+    }
+
+    #[test]
+    fn icon_buttons_never_write_their_key_after_the_text() {
+        let off = Cues::opened(false, false);
+        let on = Cues::opened(true, false);
+        // The CJK form: no "(N)" in the text; N shows beside the icon, with the underlines only.
+        let cjk = Some(derive_access('n', "新增資料夾", None, true));
+        assert_eq!(button_text_access(cjk), None);
+        assert_eq!(
+            (button_key(cjk, off), button_key(cjk, on)),
+            (None, Some('N'))
+        );
+        // A letter of the label: underlined in it, as in the rows, and nothing beside the icon.
+        let latin = Some(derive_access('n', "New folder", None, false));
+        assert_eq!(button_text_access(latin), latin);
+        assert_eq!(button_key(latin, on), None);
+        // A Latin label without the letter shows it beside the icon too.
+        let missing = Some(derive_access('x', "Delete", None, false));
+        assert_eq!(button_text_access(missing), None);
+        assert_eq!(button_key(missing, on), Some('X'));
+        assert_eq!(
+            (button_text_access(None), button_key(None, on)),
+            (None, None)
+        );
     }
 }

@@ -401,7 +401,7 @@ impl Explorer {
         .into_any_element();
         let chip = self.render_filter_chip(cx);
         let info = if !self.search_mode && !self.selection.is_empty() {
-            self.render_selection_actions(self.compact_bar(), window, cx)
+            self.render_selection_actions(window, cx)
         } else {
             self.render_folder_actions(self.compact_bar(), cx)
         };

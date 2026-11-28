@@ -638,12 +638,8 @@ impl Explorer {
             Info::Selection(self.selection_parts(&full, &short, count, order, peer, window))
         } else {
             let text = self.info_parts(cx).join(" · ");
-            let text = super::top_bar::text_width(
-                &text,
-                theme::fs_12(),
-                gpui::FontWeight::NORMAL,
-                window,
-            );
+            let text =
+                super::top_bar::text_width(&text, theme::fs_12(), gpui::FontWeight::NORMAL, window);
             Info::Folder {
                 // Laid out rounded up to whole pixels, and the gap after it.
                 count: f32::from(text.ceil() + theme::s_4()),

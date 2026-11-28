@@ -747,9 +747,8 @@ fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
     let (ws, left, cx) = open_deep(cx, 1800.);
     let right = split(&ws, &left, cx);
     let levels = arke_core::path::breadcrumbs(std::path::Path::new(OTHER)).len();
-    let state = |cx: &mut VisualTestContext| {
-        right.update(cx, |v, _| (v.row_fold, v.row_debug_for_test()))
-    };
+    let state =
+        |cx: &mut VisualTestContext| right.update(cx, |v, _| (v.row_fold, v.row_debug_for_test()));
     let mut found = None;
     for width in (600..=1800_u16).rev().step_by(10) {
         cx.simulate_resize(size(px(f32::from(width)), px(650.)));

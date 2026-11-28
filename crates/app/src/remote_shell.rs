@@ -1563,7 +1563,10 @@ mod tests {
         assert!(!listing.set_moved_out());
         assert!(listing.moved_out());
         assert_eq!(listing.take_fully_read().len(), 2);
-        assert!(listing.take_fully_read().is_empty(), "each original is handed over once");
+        assert!(
+            listing.take_fully_read().is_empty(),
+            "each original is handed over once"
+        );
 
         // The same name twice gets a free one, as a paste would.
         let twice = list_virtual(&remotes, &[dcim.clone(), dcim]).unwrap();

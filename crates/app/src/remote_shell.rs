@@ -209,6 +209,10 @@ pub(crate) struct Listing {
     pub(crate) tops: Vec<Top>,
     /// Per item: a program read all of its bytes (folders: from the start).
     read: Vec<std::sync::atomic::AtomicBool>,
+    /// A program said it moved the items (a cut): each original goes once it is read in full.
+    moved_out: std::sync::atomic::AtomicBool,
+    /// Per top: its original was handed over for deletion already.
+    taken: Vec<std::sync::atomic::AtomicBool>,
 }
 
 impl Listing {
@@ -234,6 +238,29 @@ impl Listing {
             .filter(|top| top.whole && !top.range.is_empty())
             .filter(|top| top.range.clone().all(|i| self.was_read(i)))
             .map(|top| top.url.clone())
+            .collect()
+    }
+
+    /// Records that a program moved the items; whether it had said so before.
+    pub(crate) fn set_moved_out(&self) -> bool {
+        self.moved_out.swap(true, Ordering::Relaxed)
+    }
+
+    /// Whether a program said it moved the items.
+    pub(crate) fn moved_out(&self) -> bool {
+        self.moved_out.load(Ordering::Relaxed)
+    }
+
+    /// The items given that are read in full (as [`Self::fully_read`]) and not handed over for
+    /// deletion yet; each is handed over once.
+    pub(crate) fn take_fully_read(&self) -> Vec<RemoteUrl> {
+        self.tops
+            .iter()
+            .zip(&self.taken)
+            .filter(|(top, _)| top.whole && !top.range.is_empty())
+            .filter(|(top, _)| top.range.clone().all(|i| self.was_read(i)))
+            .filter(|(_, taken)| !taken.swap(true, Ordering::Relaxed))
+            .map(|(top, _)| top.url.clone())
             .collect()
     }
 }
@@ -262,6 +289,11 @@ pub(crate) fn list_virtual(remotes: &Remotes, sources: &[PathBuf]) -> Result<Lis
         .items
         .iter()
         .map(|item| std::sync::atomic::AtomicBool::new(item.is_dir()))
+        .collect();
+    listing.taken = listing
+        .tops
+        .iter()
+        .map(|_| std::sync::atomic::AtomicBool::new(false))
         .collect();
     Ok(listing)
 }
@@ -1528,6 +1560,10 @@ mod tests {
         );
         listing.mark_read(2);
         assert_eq!(listing.fully_read().len(), 2);
+        assert!(!listing.set_moved_out());
+        assert!(listing.moved_out());
+        assert_eq!(listing.take_fully_read().len(), 2);
+        assert!(listing.take_fully_read().is_empty(), "each original is handed over once");
 
         // The same name twice gets a free one, as a paste would.
         let twice = list_virtual(&remotes, &[dcim.clone(), dcim]).unwrap();

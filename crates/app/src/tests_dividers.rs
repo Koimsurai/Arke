@@ -322,13 +322,21 @@ fn the_sidebar_edge_stops_dragging_wherever_it_is_released(cx: &mut TestAppConte
     );
 }
 
-/// Dragged and let go with the pointer still over the edge (it moved along), with no move after:
-/// the drag ends at once, and the frame drawn for it shows the hover color, not the drag color.
+/// What a person (or the test harness on a real machine) does, through the window's own event
+/// dispatch: rest on the edge, press, 30 moves, let go with the pointer still over the edge (it
+/// moved along) and no move after. The press starts the drag, the edge follows, the release ends
+/// it at once, and the frame drawn for that shows the hover color, not the drag color.
 #[gpui::test]
 fn the_sidebar_edge_released_over_itself_shows_the_hover_color(cx: &mut TestAppContext) {
     let (ws, cx) = sidebar_window(cx);
     let hit = cx.debug_bounds("sidebar-edge").expect("the edge is drawn");
     let start = point(hit.center().x, px(300.));
+    let before = theme::sidebar_full_width();
+    // As a person does: the pointer rests on the edge (lit) before the press.
+    assert!(
+        lit_at(cx, "sidebar-edge", Look::Accent, start),
+        "lit before the press"
+    );
     press(cx, start);
     for step in 1..=30 {
         drag_to(cx, start + point(px(step as f32 * 1.6), px(0.)));
@@ -342,6 +350,16 @@ fn the_sidebar_edge_released_over_itself_shows_the_hover_color(cx: &mut TestAppC
     let at = start + point(px(48.), px(0.));
     release(cx, at);
     assert!(!sidebar_resizing(&ws, cx), "released over the edge");
+    assert_ne!(
+        theme::sidebar_full_width(),
+        before,
+        "the press started a drag"
+    );
+    assert_eq!(
+        theme::sidebar_full_width(),
+        at.x,
+        "the edge followed the pointer"
+    );
     assert!((saved_sidebar_width(cx) - f32::from(at.x)).abs() < 1e-3);
     assert_eq!(
         crate::splitter::painted_for_test("sidebar-edge"),

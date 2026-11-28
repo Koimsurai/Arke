@@ -6,7 +6,8 @@
 //!
 //! A choice goes through [`Explorer::set_sort`], as a header click does: the list resorts and the
 //! sort is remembered for the folder. The flyout stays open, so a column and a direction can be
-//! picked in a row; clicking outside or Esc closes it. It is only built while open.
+//! picked in a row; clicking outside or Esc closes it. It is only built while open. From the
+//! keyboard it works as `explorer_toolbar.rs` says (#322).
 
 use std::borrow::Cow;
 
@@ -18,7 +19,7 @@ use gpui::{
 use rust_i18n::t;
 
 use super::Explorer;
-use super::toolbar::ToolbarStop as _;
+use super::toolbar::{Choice, Mark, ToolbarStop as _};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::theme;
@@ -66,7 +67,27 @@ const fn column_key(column: SortColumn) -> &'static str {
     }
 }
 
+/// The flyout's choices in order: the columns, then the directions.
+pub(super) fn sort_choices() -> Vec<Choice> {
+    SORT_COLUMNS
+        .into_iter()
+        .map(Choice::SortBy)
+        .chain([Choice::SortOrder(true), Choice::SortOrder(false)])
+        .collect()
+}
+
 impl Explorer {
+    /// Opens or closes the flyout from the keyboard or a screen reader: open, it takes the focus
+    /// on the column sorted by.
+    fn toggle_sort_options_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_sort_options(cx);
+        let at = SORT_COLUMNS
+            .iter()
+            .position(|c| *c == self.sort.column)
+            .unwrap_or(0);
+        self.flyout_by_key(self.sort_options_open, at, "sort-options", window, cx);
+    }
+
     /// Opens or closes the flyout.
     pub(super) fn toggle_sort_options(&mut self, cx: &mut Context<Self>) {
         if !self.close_sort_options(cx) {
@@ -140,8 +161,8 @@ impl Explorer {
             .id("sort-options")
             .debug_selector(|| "sort-options".to_owned())
             .a11y_button(t!("view.sort"))
-            .a11y_open_close(open, cx.entity().downgrade(), |this, _, cx| {
-                this.toggle_sort_options(cx);
+            .a11y_open_close(open, cx.entity().downgrade(), |this, window, cx| {
+                this.toggle_sort_options_by_key(window, cx);
             })
             .flex()
             .flex_none()
@@ -169,15 +190,16 @@ impl Explorer {
             // Opens on press, like a menu; the scrim closes it again.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     this.toggle_sort_options(cx);
+                    this.flyout_return("sort-options", window, cx);
                 }),
             )
             .toolbar_menu("sort-options", {
                 let this = cx.entity().downgrade();
-                move |_, cx| {
-                    let _ = this.update(cx, Self::toggle_sort_options);
+                move |window, cx| {
+                    let _ = this.update(cx, |this, cx| this.toggle_sort_options_by_key(window, cx));
                 }
             })
             .when(!open, |d| d.tooltip_below(t!("view.sort")));
@@ -193,16 +215,17 @@ impl Explorer {
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            cx.listener(|this, _: &MouseDownEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.close_sort_options(cx);
+                                this.flyout_return("sort-options", window, cx);
                             }),
                         ),
                 ),
             )
             .with_priority(1);
             let panel = crate::motion::appear(
-                div().child(self.sort_options_panel(cx)),
+                div().child(self.sort_options_panel(window, cx)),
                 "sort-options-appear",
                 0.,
                 -crate::motion::NUDGE,
@@ -210,7 +233,7 @@ impl Explorer {
             root = root.child(scrim).child(Self::view_options_flyout(panel));
         } else if let Some(ghost) = &self.closing_sort_options {
             let panel = crate::motion::leave(
-                div().child(self.sort_options_panel(cx)),
+                div().child(self.sort_options_panel(window, cx)),
                 ghost.id("sort-options-leave"),
                 0.,
                 -crate::motion::NUDGE,
@@ -220,8 +243,15 @@ impl Explorer {
         root.into_any_element()
     }
 
-    fn sort_options_panel(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn sort_options_panel(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let sort = self.sort;
+        let choices = sort_choices();
+        let mark =
+            |choice: Choice| self.flyout_mark(choices.iter().position(|c| *c == choice), window);
         let columns: Vec<AnyElement> = SORT_COLUMNS
             .into_iter()
             .map(|column| {
@@ -229,7 +259,7 @@ impl Explorer {
                     ("sort-by", column as usize).into(),
                     format!("sort-by-{}", column_key(column)),
                     column_label(column),
-                    sort.column == column,
+                    (sort.column == column, mark(Choice::SortBy(column))),
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.pick_sort_column(column, cx);
                     }),
@@ -248,7 +278,10 @@ impl Explorer {
                     ("sort-order", usize::from(ascending)).into(),
                     format!("sort-{key}"),
                     label,
-                    sort.ascending == ascending,
+                    (
+                        sort.ascending == ascending,
+                        mark(Choice::SortOrder(ascending)),
+                    ),
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.pick_sort_direction(ascending, cx);
                     }),
@@ -258,6 +291,7 @@ impl Explorer {
         div()
             .id("sort-options-panel")
             .a11y(gpui::Role::Dialog, t!("view.sort"))
+            .map(|d| self.flyout_keys(self.sort_options_open, d, window, cx))
             .occlude()
             .w(panel_w())
             .p(theme::s_8())
@@ -276,12 +310,13 @@ impl Explorer {
     }
 }
 
-/// One choice in the flyout: a check when it is the current one, then its name.
+/// One choice in the flyout: a check when it is the current one, then its name; `(claim, ring)`:
+/// the keyboard is on it (see `explorer_toolbar.rs`).
 fn choice_row(
     id: ElementId,
     selector: String,
     label: Cow<'static, str>,
-    checked: bool,
+    (checked, (claim, ring)): (bool, Mark),
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let label = label.into_owned();
@@ -290,6 +325,11 @@ fn choice_row(
         .debug_selector(move || selector)
         .a11y(gpui::Role::RadioButton, label.clone())
         .aria_toggled(crate::a11y::toggled(checked))
+        .when(
+            claim,
+            gpui::StatefulInteractiveElement::aria_active_descendant,
+        )
+        .when(ring, |d| d.shadow(crate::keynav::ring()))
         .flex()
         .flex_none()
         .items_center()

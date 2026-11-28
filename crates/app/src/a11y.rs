@@ -174,6 +174,19 @@ pub(crate) trait A11yExt: StatefulInteractiveElement + Sized {
         })
     }
 
+    /// A line of text a screen reader can read (What's new's notes). Only while a client is
+    /// attached.
+    #[must_use]
+    fn a11y_text(self, text: impl FnOnce() -> String) -> Self {
+        if !active() {
+            return self;
+        }
+        // AccessKit reads a label's text from its value, not its name.
+        let text = text();
+        self.a11y(Role::Label, text.clone())
+            .a11y_node(move |node| node.set_value(text))
+    }
+
     /// A button that can be off or on (preview pane, split view).
     #[must_use]
     fn a11y_toggle(self, label: impl Into<SharedString>, on: bool) -> Self {

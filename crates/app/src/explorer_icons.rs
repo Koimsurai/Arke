@@ -157,13 +157,13 @@ impl IconSize {
         }
     }
 
-    /// One wheel notch up: the next ladder stop above, if any.
-    fn larger(self) -> Option<Self> {
+    /// One wheel notch up (or Right on the view options slider): the next ladder stop above.
+    pub(super) fn larger(self) -> Option<Self> {
         Self::LADDER.into_iter().find(|s| *s > self)
     }
 
-    /// One wheel notch down: the next ladder stop below, if any.
-    fn smaller(self) -> Option<Self> {
+    /// One wheel notch down (or Left on the slider): the next ladder stop below.
+    pub(super) fn smaller(self) -> Option<Self> {
         Self::LADDER.into_iter().rev().find(|s| *s < self)
     }
 }

@@ -231,9 +231,10 @@ impl Layout {
                         .min_w_0()
                         .px(theme::s_8())
                         .py(theme::s_6())
-                        .flex()
-                        .when(align == Align::Center, gpui::Styled::justify_center)
-                        .when(align == Align::Right, gpui::Styled::justify_end)
+                        // Text alignment, not flex justification: a long cell wraps inside
+                        // its column instead of spilling into the next one (#547).
+                        .when(align == Align::Center, gpui::Styled::text_center)
+                        .when(align == Align::Right, gpui::Styled::text_right)
                         .when(ix > 0, |d| d.border_l_1().border_color(theme::line()))
                         .child(self.text(
                             cell,

@@ -5099,6 +5099,16 @@ pub(crate) fn reload_places_everywhere(cx: &mut App) {
     }
 }
 
+/// A remote folder changed outside Arke's own operations (a program moved cut items out of it,
+/// #529): the panes showing it, in every window, relist.
+pub(crate) fn reload_remote_everywhere(folder: &Path, cx: &mut App) {
+    for window in cx.windows() {
+        if let Some(workspace) = window.downcast::<Workspace>() {
+            let _ = workspace.update(cx, |ws, _, cx| ws.reload_remote(folder, cx));
+        }
+    }
+}
+
 pub(crate) fn leave_drive_everywhere(drive: &Path, cx: &mut App) {
     for window in cx.windows() {
         if let Some(workspace) = window.downcast::<Workspace>() {

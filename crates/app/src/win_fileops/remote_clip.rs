@@ -32,6 +32,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
@@ -261,19 +262,30 @@ unsafe fn describe_medium(medium: &STGMEDIUM) -> String {
     }
 }
 
-/// Deletes the originals of items another program moved, read in full, on a thread of its own.
-fn delete_moved(remotes: &Arc<Remotes>, urls: Vec<RemoteUrl>) {
-    if urls.is_empty() {
+/// Deletes the originals of items another program moved, read in full (with the paths the panes
+/// show them under), on a thread of its own; then the panes showing their folders relist.
+fn delete_moved(remotes: &Arc<Remotes>, moved: Vec<(RemoteUrl, PathBuf)>) {
+    if moved.is_empty() {
         return;
     }
-    log::debug!(target: LOG, "deleting originals moved to another program: {urls:?}");
+    log::debug!(target: LOG, "deleting originals moved to another program: {moved:?}");
     let remotes = Arc::clone(remotes);
     crate::explorer::spawn_thread("remote-moved-out", move || {
-        for url in urls {
+        let mut folders: Vec<PathBuf> = Vec::new();
+        for (url, path) in moved {
             match remotes.delete(&url, &arke_remote::NoProgress) {
                 Ok(()) => log::info!("{url} moved to another program, original deleted"),
                 Err(err) => log::warn!("{url} not deleted after a move to another program: {err}"),
             }
+            // Relisted either way: a failed delete may have removed part of a folder.
+            if let Some(folder) = path.parent()
+                && !folders.iter().any(|f| f == folder)
+            {
+                folders.push(folder.to_path_buf());
+            }
+        }
+        for folder in folders {
+            crate::remote_shell::changed_elsewhere(folder);
         }
     });
 }
@@ -1019,7 +1031,6 @@ mod tests {
     use crate::shell::OpProgress;
     use crate::win_virtual_drop::{ComThread, VirtualDrop};
     use arke_remote::testing_mtp::{FakeDevices, Node};
-    use std::path::PathBuf;
     use windows::Win32::System::Ole::ReleaseStgMedium;
 
     /// A phone with photos in `DCIM` and a folder in it, and the guard of the hub's cache.

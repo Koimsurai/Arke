@@ -3551,7 +3551,7 @@ fn a_new_home_tab_leaves_the_home_tab_it_came_from(cx: &mut TestAppContext) {
     wait_until(cx, &first, "load", loaded(r"C:\a"));
     change(cx, |s| s.new_tab = NewTabAction::Home);
     let home = t!("home.title").into_owned();
-    ws.update_in(cx, |ws, window, cx| ws.open_start_home_for_test(window, cx));
+    ws.update_in(cx, Workspace::open_start_home_for_test);
     cx.run_until_parked();
 
     cx.simulate_keystrokes("ctrl-t");
@@ -3575,7 +3575,7 @@ fn a_new_home_tab_leaves_the_home_tab_it_came_from(cx: &mut TestAppContext) {
     ws.update_in(cx, |ws, window, cx| ws.close_tab(1, window, cx));
     cx.run_until_parked();
     ws.update(cx, |ws, cx| {
-        assert_eq!(ws.tab_titles_for_test(cx), [home.clone()]);
+        assert_eq!(ws.tab_titles_for_test(cx), std::slice::from_ref(&home));
         assert_eq!(ws.shown_page_for_test(), Some(home.clone()));
     });
 }

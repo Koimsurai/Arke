@@ -4037,9 +4037,11 @@ impl Explorer {
             .when(!footer.is_empty(), |d| d.child(div().flex_none().children(footer)))
     }
 
-    /// Bottom row of icon buttons: icon above label, equal widths.
+    /// Bottom row of icon buttons: icon above label, equal widths. Resting on one closes a
+    /// submenu left open by the row above, as resting on any row without a submenu does (#549).
     fn render_action_row(
         menu: &ContextMenu,
+        level: usize,
         items: &[MenuItem],
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -4079,6 +4081,11 @@ impl Explorer {
                             ))
                     })
                     .when(!enabled, |d| d.text_color(theme::text_disabled()))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.hover_row(level, ix, false, cx);
+                        }
+                    }))
                     // The icon in a box of its size, which the key is placed against. Every
                     // icon button has one (`decorate`).
                     .children(item.glyph.map(|glyph| {
@@ -4170,7 +4177,7 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let MenuEntry::Actions(items) = entry {
-            return Self::render_action_row(menu, items, cx);
+            return Self::render_action_row(menu, level, items, cx);
         }
         let Some(RowParts {
             label,

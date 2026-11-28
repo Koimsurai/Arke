@@ -167,6 +167,25 @@ jobs:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
+  # The workflows themselves: actionlint for mistakes, zizmor for security (template injection
+  # from issue and PR text, cache poisoning, credentials left in checkouts). zizmor reports only
+  # for now; once its findings are fixed it will fail the check.
+  workflows:
+    name: workflows · actionlint + zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # actionlint isn't in taiki-e/install-action's list: the maintained wrapper action.
+      - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: zizmor
+      - name: zizmor
+        continue-on-error: true
+        run: zizmor .github/workflows/
+
   # Dependabot's grouped update titles run past the 72-character limit.
   commits:
     name: conventional commits

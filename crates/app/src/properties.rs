@@ -1811,7 +1811,7 @@ fn count_folder_by(
     let (times, profiles) = (fast.table_times, fast.profiles);
     if let Some(space) = fast
         .index
-        .and_then(|ix| ix.usage_below(dir, cluster, profiles, cancel))
+        .and_then(|ix| ix.usage_below(dir, cluster, profiles, cancel, progress))
     {
         return (Some(space), "search index");
     }

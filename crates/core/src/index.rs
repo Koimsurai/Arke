@@ -6313,13 +6313,24 @@ mod tests {
             .unwrap();
         let mut total = direct;
         let mut sizes: Vec<(String, u64)> = Vec::new();
-        for child in children {
+        // All the unindexed folders of all the children in one pass.
+        let roots: Vec<(PathBuf, usize)> = children
+            .iter()
+            .enumerate()
+            .flat_map(|(i, c)| c.unindexed.iter().map(move |u| (u.clone(), i)))
+            .collect();
+        let walked = crate::dirsize::usage_of_many(
+            fs.as_ref(),
+            roots,
+            children.len(),
+            cluster,
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        for (child, more) in children.into_iter().zip(walked) {
             let mut usage = child.usage;
-            for u in &child.unindexed {
-                usage += crate::dirsize::usage(fs.as_ref(), u, cluster, &cancel, &mut |_| {})
-                    .unwrap()
-                    .usage;
-            }
+            usage += more;
             total += usage;
             sizes.push((child.name, usage.bytes));
         }

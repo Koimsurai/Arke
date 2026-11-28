@@ -1124,8 +1124,14 @@ pub(crate) fn channel_changed(channel: Channel, cx: &mut App) {
     }
 }
 
-/// Automatic check after startup: when enabled and more than 20 hours since the last check (nightly
-/// ships daily).
+/// Least time between two automatic checks. A release can follow another within hours (0.10.0
+/// and 0.10.1 came out the same day), so Arke looks about once an hour, as VS Code does; just
+/// under the hour, so the hourly timer in `main.rs` isn't skipped by a few seconds' drift. When
+/// many people share one address the API limit falls back to the releases feed (`check`).
+const CHECK_EVERY_SECS: u64 = 50 * 60;
+
+/// Automatic check after startup and on the hourly timer: when enabled and at least
+/// [`CHECK_EVERY_SECS`] since the last check.
 pub(crate) fn auto_check(cx: &mut App) {
     let settings = crate::settings::SettingsStore::global(cx)
         .read(cx)
@@ -1135,15 +1141,19 @@ pub(crate) fn auto_check(cx: &mut App) {
     {
         return;
     }
-    let due = settings
-        .update_checked
-        .is_none_or(|at| unix_now().saturating_sub(at) > 20 * 3600);
-    if due {
+    if check_due(settings.update_checked, unix_now()) {
         start_check(settings.update_channel(), cx);
     } else {
         // Found on a metered connection: download it once the connection allows.
         crate::update_quiet::resume(cx);
     }
+}
+
+/// Whether an automatic check is due at `now`, the last one having been at `last` (Unix seconds).
+/// A last check in the future means the clock was set back: due, or checks would wait for the
+/// clock to catch up.
+fn check_due(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|at| now < at || now - at >= CHECK_EVERY_SECS)
 }
 
 fn unix_now() -> u64 {
@@ -1155,6 +1165,23 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hourly timer checks on every tick, even one a little early, and never twice in a row
+    /// right after a check (a restart soon after starting doesn't ask GitHub again).
+    #[test]
+    fn automatic_checks_come_about_hourly() {
+        let at = 1_000_000;
+        assert!(check_due(None, at), "never checked");
+        assert!(!check_due(Some(at), at + 60), "a minute later");
+        assert!(check_due(Some(at), at + 3600), "an hour later");
+        assert!(check_due(Some(at), at + 3590), "a tick a few seconds early");
+        assert!(check_due(Some(at), at + 20 * 3600), "after a day away");
+        // A clock set back doesn't hold checks until it catches up.
+        assert!(
+            check_due(Some(at), at - 3 * 86_400),
+            "clock set back three days"
+        );
+    }
 
     #[test]
     fn detects_scoop_and_winget_installs() {

@@ -106,6 +106,13 @@ impl SelectionParts {
         summary + self.divider + buttons + labels + more + self.clear + gaps
     }
 
+    /// Whether `layout` leaves the path bar `path` wide (every level) out of `room`, as the row is
+    /// laid out: in whole pixels, so the selection may take up to its width rounded up, and the
+    /// path bar collapses levels unless its slot holds `path` exactly.
+    pub(super) fn fits(&self, layout: &SelectionLayout, path: f32, room: f32) -> bool {
+        self.width(layout).ceil() + path.ceil() <= room
+    }
+
     /// The layouts from the roomiest to the narrowest, each one step shorter than the one
     /// before: the summary shortens, the labels go, then the buttons one by one.
     fn steps(&self) -> impl Iterator<Item = SelectionLayout> + use<> {
@@ -136,7 +143,7 @@ pub(super) fn selection_layout(room: f32, path: f32, parts: &SelectionParts) -> 
     let buttons = parts.buttons.len();
     parts
         .steps()
-        .find(|layout| parts.width(layout) + path <= room)
+        .find(|layout| parts.fits(layout, path, room))
         .unwrap_or(SelectionLayout {
             summary: Summary::Pill,
             labels: false,
@@ -228,6 +235,28 @@ mod tests {
         assert_eq!(mid, layout(Summary::Pill, 2));
         assert!((2..5).all(|ix| mid.shows(ix)) && !mid.shows(0) && !mid.shows(1));
         assert!(mid.more());
+    }
+
+    /// Widths as the machine measured them are fractional, the row's slots whole pixels: at a
+    /// room of 781, "1 selected" and every button (288.59) next to the path (492.11) would take
+    /// 289 + 492, a hair short of the path, which collapsed a level (#528). The pill steps in
+    /// instead.
+    #[test]
+    fn fractional_widths_leave_the_path_its_whole_pixels() {
+        let parts = SelectionParts {
+            full: 120.4,
+            count: 79.592,
+            pill: 29.66,
+            ..measured()
+        };
+        let path = 492.107;
+        let at = |room: f32| selection_layout(room, path, &parts);
+        assert!((parts.width(&layout(Summary::Count, 0)) - 288.592).abs() < 0.001);
+        assert!((parts.width(&layout(Summary::Pill, 0)) - 238.66).abs() < 0.001);
+        assert_eq!(at(781.), layout(Summary::Pill, 0));
+        assert_eq!(at(782.), layout(Summary::Count, 0));
+        assert_eq!(at(731.), layout(Summary::Pill, 1));
+        assert_eq!(at(732.), layout(Summary::Pill, 0));
     }
 
     /// Split view: Copy to/Move to the other side keep their labels until the summary is the
@@ -350,7 +379,7 @@ mod tests {
             spare in 0_f32..400.,
         ) {
             let all = everything(&parts);
-            let room = parts.width(&all) + path + spare;
+            let room = parts.width(&all).ceil() + path.ceil() + spare;
             prop_assert_eq!(selection_layout(room, path, &parts), all);
         }
 
@@ -414,9 +443,9 @@ mod tests {
             room in 0_f32..1600.,
         ) {
             let layout = selection_layout(room, path, &parts);
-            if parts.width(&folded(&parts)) + path <= room {
+            if parts.fits(&folded(&parts), path, room) {
                 prop_assert!(!layout.collapse, "{:?}", layout);
-                prop_assert!(parts.width(&layout) + path <= room, "{:?}", layout);
+                prop_assert!(parts.fits(&layout, path, room), "{:?}", layout);
             } else {
                 prop_assert_eq!(layout, SelectionLayout { collapse: true, ..folded(&parts) });
             }
@@ -431,7 +460,24 @@ mod tests {
         ) {
             let layout = selection_layout(room, path, &parts);
             if let Some(roomier) = roomier(&parts, layout) {
-                prop_assert!(parts.width(&roomier) + path > room, "{:?} fits", roomier);
+                prop_assert!(!parts.fits(&roomier, path, room), "{:?} fits", roomier);
+            }
+        }
+
+        /// Laid out in whole pixels, the selection takes up to its width rounded up out of a
+        /// whole-pixel room, and whatever is left must hold the path's (fractional) width
+        /// whenever the layout keeps every level.
+        #[test]
+        fn the_path_keeps_its_levels_in_whole_pixels(
+            parts in parts(),
+            path in 40_f32..900.,
+            room in 0_u16..1600,
+        ) {
+            let room = f32::from(room);
+            let layout = selection_layout(room, path, &parts);
+            if !layout.collapse {
+                let slot = room - parts.width(&layout).ceil();
+                prop_assert!(slot >= path, "slot {} for {}: {:?}", slot, path, layout);
             }
         }
 

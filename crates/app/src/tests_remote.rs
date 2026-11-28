@@ -174,6 +174,63 @@ fn adds_an_sftp_location_and_works_in_it(cx: &mut TestAppContext) {
     });
 }
 
+/// An address typed without a user asks to sign in; after signing in with a user the pane
+/// reopens that folder as that user (the password is saved for the user, not for the bare
+/// address), instead of asking again.
+#[gpui::test]
+fn signing_in_to_an_address_without_a_user_opens_the_folder(cx: &mut TestAppContext) {
+    let (root, _root) = temp_dir("signin");
+    std::fs::write(root.join("hello.txt"), b"hi").unwrap();
+    let port = serve_sftp(root, 3);
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    let (ws, cx) = setup_remote(cx, fs, r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+
+    view.update(cx, |v, cx| {
+        v.navigate(
+            PathBuf::from(format!("sftp://127.0.0.1:{port}")),
+            NavKind::New,
+            cx,
+        );
+    });
+    wait(cx, "sign-in is offered", &|cx| {
+        view.update(cx, |v, _| {
+            matches!(v.error_action, Some(crate::explorer::ErrorAction::Login(_)))
+        })
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| v.run_error_action(window, cx));
+    });
+    let dialog = ws.update(cx, |ws, _| ws.net_dialog_for_test()).unwrap();
+    dialog.update(cx, |d, cx| {
+        d.fill_remote_for_test(
+            Protocol::Sftp,
+            "127.0.0.1",
+            &port.to_string(),
+            USER,
+            PASSWORD,
+            cx,
+        );
+    });
+    wait(cx, "host key prompt", &|cx| {
+        dialog.update(cx, |d, _| d.pending_key_for_test()).is_some()
+    });
+    dialog.update(cx, crate::net_dialog::NetDialog::submit_for_test);
+    wait(cx, "dialog closes", &|cx| {
+        ws.update(cx, |ws, _| ws.net_dialog_for_test()).is_none()
+    });
+
+    wait_until(
+        cx,
+        &view,
+        "folder listed",
+        loaded(&format!("sftp://{USER}@127.0.0.1:{port}")),
+    );
+    assert_eq!(view.update(cx, |v, _| names(v)), ["hello.txt"]);
+}
+
 /// Plain http with a password is refused until the user allows it for that location: the dialog
 /// warns first, and allowing lets the sign-in go on. The test hub has no HTTP, so the attempt
 /// after allowing fails with its own message, which also takes the consent back (it was not used).

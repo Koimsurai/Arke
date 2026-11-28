@@ -11,10 +11,15 @@
 //! them the way `main.rs` routes a folder argument and hands them to the resident Arke through
 //! its pipe, so the caller never waits for Arke's UI.
 //!
-//! Whether COM accepts the class is checked before the verbs rely on it ([`works`]): DCOM does not
-//! accept a class registered per user (`HKCU`) whose exe is in a folder an administrator created
-//! (a per-machine install under Program Files). The server starts and registers, but callers wait
-//! about a minute and get `CO_E_SERVER_EXEC_FAILURE`. Then the verbs keep running the command.
+//! Whether COM accepts the class is checked before the verbs rely on it ([`works`]). On some
+//! per-machine installs (the exe under Program Files, a per-user `HKCU` class) DCOM was seen to
+//! refuse it: the server starts and registers, but callers wait about a minute and get
+//! `CO_E_SERVER_EXEC_FAILURE`. That is why the check exists; it does not happen on every such
+//! install (a test machine passed the check in about 0.1 s, and started `-Embedding` cold, for an
+//! exe both in a user's folder and in a Program Files folder owned by Administrators). When the
+//! check fails the verbs keep running the command (`folder_handler::verbs_without_com` decides
+//! what they get instead). Only the class goes in before the check; the verbs are written after
+//! it, straight in the mode it found (#540).
 #![allow(
     clippy::inline_always,
     clippy::ref_as_ptr,

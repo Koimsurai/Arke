@@ -3,9 +3,12 @@
 //!
 //! The per-user way the Files app uses (`HKCU` only, nothing outside `Software\Classes`):
 //! - `Folder\shell\open\command` and `Folder\shell\explore\command` run `"<arke.exe>" "%1"`, with
-//!   an empty `DelegateExecute` so the shell runs the command line instead of its stock handler.
+//!   `DelegateExecute` set to Arke's COM class once it was checked to work ([`VerbMode::Com`]), or
+//!   empty so the shell runs the command line instead of its stock handler ([`VerbMode::Command`]).
 //!   Every way the shell opens a folder, including `SHOpenFolderAndSelectItems` ("Show in folder" of
 //!   browsers and editors), goes through these verbs, so no File Explorer window is created.
+//!   The COM class can be registered on its own first ([`register_com_class`]), so the verbs go
+//!   straight to COM mode without ever holding an empty `DelegateExecute` on the way (#540).
 //! - Win+E: `CLSID\{52205fd8-...}\shell\opennewwindow\command` with an empty `DelegateExecute`
 //!   runs `"<arke.exe>" --home`. Only on request ([`apply_scoped`]): File Explorer started from the
 //!   taskbar or Start runs the same verb, so this also replaces File Explorer started on purpose.
@@ -41,6 +44,16 @@ const WIN_E_CLSID: &str = "{52205fd8-5dfb-447d-801a-d0b52f2e83e1}";
 pub const ARKE_CLSID: &str = "{8F3B6C21-4E7A-4D2B-9C5E-A1D04F7E3340}";
 /// Verbs of the `Folder` class that open a folder.
 const FOLDER_VERBS: [&str; 2] = ["open", "explore"];
+
+/// How the folder verbs reach Arke: what their `DelegateExecute` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerbMode {
+    /// Arke's class id ([`ARKE_CLSID`]): the shell calls Arke over COM. Only once it was checked
+    /// to work.
+    Com,
+    /// Empty: the shell runs the command line instead of its stock handler.
+    Command,
+}
 
 /// Why registering or restoring failed.
 #[derive(Debug, thiserror::Error)]
@@ -244,58 +257,72 @@ fn classes_key(rest: &str) -> String {
     format!(r"{CLASSES}\{rest}")
 }
 
-/// Every value Arke writes for the exe at `exe`; the Win+E class only with `win_e`. With `com`
-/// the folder verbs delegate to Arke's COM class (see [`ARKE_CLSID`]); its registration is
-/// written either way, so whether COM works can be checked before the verbs rely on it.
-fn specs(exe: &Path, win_e: bool, com: bool) -> Vec<Spec> {
-    let exe = exe.display();
+/// Every value Arke writes for the exe at `exe`; the Win+E class only with `win_e`. `mode` says
+/// how the folder verbs reach Arke; the COM class's registration is written either way, so
+/// whether COM works can be checked before the verbs rely on it. The values are written in this
+/// order: in COM mode each verb's `DelegateExecute` comes before its command, so no moment has
+/// Arke's command under the verb without Arke's class id next to it (#540).
+fn specs(exe: &Path, win_e: bool, mode: VerbMode) -> Vec<Spec> {
     let mut out = Vec::new();
     for verb in FOLDER_VERBS {
         let key = classes_key(&format!(r"Folder\shell\{verb}\command"));
-        out.push(Spec {
+        let command = Spec {
             key: key.clone(),
             value: "",
-            data: format!(r#""{exe}" "%1""#),
+            data: format!(r#""{}" "%1""#, exe.display()),
             pattern: Pattern::Command(r#" "%1""#.into()),
-        });
+        };
         // Empty: the shell runs the default value instead of the stock handler. Arke's class id:
         // the shell calls Arke over COM; the command stays for callers that ignore it.
-        out.push(Spec {
+        let delegate = Spec {
             key,
             value: "DelegateExecute",
-            data: if com {
-                ARKE_CLSID.to_owned()
-            } else {
-                String::new()
+            data: match mode {
+                VerbMode::Com => ARKE_CLSID.to_owned(),
+                VerbMode::Command => String::new(),
             },
             pattern: Pattern::Delegate,
-        });
+        };
+        match mode {
+            VerbMode::Com => out.extend([delegate, command]),
+            VerbMode::Command => out.extend([command, delegate]),
+        }
     }
-    // COM appends `-Embedding` when it starts this.
-    out.push(Spec {
+    out.push(com_class_spec(exe));
+    if win_e {
+        out.extend(win_e_specs(exe));
+    }
+    out
+}
+
+/// The registration of Arke's COM class. COM appends `-Embedding` when it starts this.
+fn com_class_spec(exe: &Path) -> Spec {
+    Spec {
         key: classes_key(&format!(r"CLSID\{ARKE_CLSID}\LocalServer32")),
         value: "",
-        data: format!(r#""{exe}""#),
+        data: format!(r#""{}""#, exe.display()),
         pattern: Pattern::Command(String::new()),
-    });
-    if !win_e {
-        return out;
     }
-    let win_e = classes_key(&format!(r"CLSID\{WIN_E_CLSID}\shell\opennewwindow\command"));
-    out.push(Spec {
-        key: win_e.clone(),
-        value: "",
-        data: format!(r#""{exe}" --home"#),
-        pattern: Pattern::Command(" --home".into()),
-    });
-    // Empty on purpose: the shell then runs the default value instead of the stock handler.
-    out.push(Spec {
-        key: win_e,
-        value: "DelegateExecute",
-        data: String::new(),
-        pattern: Pattern::Literal(String::new()),
-    });
-    out
+}
+
+/// The Win+E verb's values.
+fn win_e_specs(exe: &Path) -> Vec<Spec> {
+    let key = classes_key(&format!(r"CLSID\{WIN_E_CLSID}\shell\opennewwindow\command"));
+    vec![
+        Spec {
+            key: key.clone(),
+            value: "",
+            data: format!(r#""{}" --home"#, exe.display()),
+            pattern: Pattern::Command(" --home".into()),
+        },
+        // Empty on purpose: the shell then runs the default value instead of the stock handler.
+        Spec {
+            key,
+            value: "DelegateExecute",
+            data: String::new(),
+            pattern: Pattern::Literal(String::new()),
+        },
+    ]
 }
 
 /// `key` and every key above it that lies below `Software\Classes`, top first.
@@ -393,12 +420,13 @@ pub fn apply_scoped(
     exe: &Path,
     win_e: bool,
 ) -> Result<Applied, Error> {
-    apply_mode(reg, store, exe, win_e, false)
+    apply_mode(reg, store, exe, win_e, VerbMode::Command)
 }
 
-/// [`apply_scoped`], with the folder verbs delegating to Arke's COM class when `com` is set (only
-/// once it was checked to work, see [`ARKE_CLSID`]); without it they run the command. The class's
-/// registration is written either way.
+/// [`apply_scoped`], with the folder verbs reaching Arke as `mode` says ([`VerbMode::Com`] only
+/// once it was checked to work, see [`ARKE_CLSID`]). The class's registration is written either
+/// way. Each value is written straight to what `mode` wants, so going to COM mode after
+/// [`register_com_class`] never passes through an empty `DelegateExecute`.
 ///
 /// # Errors
 /// As [`apply`].
@@ -407,10 +435,37 @@ pub fn apply_mode(
     store: &dyn BackupStore,
     exe: &Path,
     win_e: bool,
-    com: bool,
+    mode: VerbMode,
 ) -> Result<Applied, Error> {
-    let specs = specs(exe, win_e, com);
-    for spec in &specs {
+    let mut applied = apply_specs(reg, store, &specs(exe, win_e, mode))?;
+    if !win_e {
+        applied.dropped = drop_win_e(reg, store)?;
+    }
+    Ok(applied)
+}
+
+/// Registers only Arke's COM class (for the exe at `exe`), with its backup entry, and leaves the
+/// folder verbs alone: what has to be in place before checking whether COM reaches Arke. Turning
+/// the setting off removes it with the rest.
+///
+/// # Errors
+/// As [`apply`].
+pub fn register_com_class(
+    reg: &dyn Registry,
+    store: &dyn BackupStore,
+    exe: &Path,
+) -> Result<Applied, Error> {
+    apply_specs(reg, store, &[com_class_spec(exe)])
+}
+
+/// Saves what is there before each of `specs` to the backup (before the first write), then writes
+/// whatever differs.
+fn apply_specs(
+    reg: &dyn Registry,
+    store: &dyn BackupStore,
+    specs: &[Spec],
+) -> Result<Applied, Error> {
+    for spec in specs {
         check_allowed(&spec.key)?;
     }
     let mut backup = store.load()?.unwrap_or_else(|| Backup {
@@ -418,7 +473,7 @@ pub fn apply_mode(
         ..Backup::default()
     });
     let mut dirty = false;
-    for spec in &specs {
+    for spec in specs {
         let current = reg.read(&spec.key, spec.value)?;
         // What to put back later: whatever is there that Arke didn't write.
         let foreign = current.filter(|v| !spec.pattern.matches(v));
@@ -456,7 +511,7 @@ pub fn apply_mode(
         store.save(&backup)?;
     }
     let mut applied = Applied::default();
-    for spec in &specs {
+    for spec in specs {
         let desired = RegValue::sz(&spec.data);
         let current = reg.read(&spec.key, spec.value)?;
         if current.as_ref() == Some(&desired) {
@@ -470,9 +525,6 @@ pub fn apply_mode(
         }
         reg.write(&spec.key, spec.value, &desired)?;
         applied.written += 1;
-    }
-    if !win_e {
-        applied.dropped = drop_win_e(reg, store)?;
     }
     Ok(applied)
 }
@@ -556,7 +608,7 @@ pub fn restore(reg: &dyn Registry, store: &dyn BackupStore) -> Result<Restored, 
         (b.entries, b.created_keys)
     } else {
         // No record of the originals: assume there were none.
-        let entries: Vec<BackupEntry> = specs(Path::new("arke.exe"), true, false)
+        let entries: Vec<BackupEntry> = specs(Path::new("arke.exe"), true, VerbMode::Command)
             .into_iter()
             .map(|s| BackupEntry {
                 key: s.key,
@@ -1293,10 +1345,10 @@ mod tests {
         let backup = MemoryBackup::default();
         reg.put(OPEN_CMD, "DelegateExecute", STOCK_DELEGATE);
         let before = reg.snapshot();
-        apply_mode(&reg, &backup, exe(), true, false).unwrap();
+        apply_mode(&reg, &backup, exe(), true, VerbMode::Command).unwrap();
         assert_eq!(reg.text(COM_SERVER, "").unwrap(), format!(r#""{EXE}""#));
         assert!(!uses_com(&reg));
-        let applied = apply_mode(&reg, &backup, exe(), true, true).unwrap();
+        let applied = apply_mode(&reg, &backup, exe(), true, VerbMode::Com).unwrap();
         assert!(uses_com(&reg));
         assert_eq!(applied.written, 2, "only the two DelegateExecute values");
         assert_eq!(applied.repaired, 0);
@@ -1308,8 +1360,8 @@ mod tests {
             assert_eq!(reg.text(key, "").unwrap(), cmd(EXE));
         }
         assert_eq!(reg.text(WIN_E_CMD, "DelegateExecute").as_deref(), Some(""));
-        apply_mode(&reg, &backup, exe(), true, false).unwrap();
-        apply_mode(&reg, &backup, exe(), true, true).unwrap();
+        apply_mode(&reg, &backup, exe(), true, VerbMode::Command).unwrap();
+        apply_mode(&reg, &backup, exe(), true, VerbMode::Com).unwrap();
         let saved = backup.load().unwrap().unwrap();
         let open = saved
             .entries
@@ -1321,10 +1373,57 @@ mod tests {
         assert_eq!(reg.snapshot(), before);
     }
 
+    /// The COM class goes in on its own, backed up, without touching the folder verbs; COM mode
+    /// then writes the verbs straight to Arke's class id, and turning off restores it all (#540).
+    #[test]
+    fn the_com_class_is_registered_before_the_folder_verbs() {
+        let reg = MemoryRegistry::default();
+        let backup = MemoryBackup::default();
+        reg.put(OPEN_CMD, "DelegateExecute", STOCK_DELEGATE);
+        let before = reg.snapshot();
+        let class = register_com_class(&reg, &backup, exe()).unwrap();
+        assert_eq!(class.written, 1);
+        assert_eq!(reg.text(COM_SERVER, "").unwrap(), format!(r#""{EXE}""#));
+        assert_eq!(
+            reg.text(OPEN_CMD, "DelegateExecute").as_deref(),
+            Some(STOCK_DELEGATE),
+            "the folder verbs are not touched"
+        );
+        assert_eq!(reg.text(OPEN_CMD, ""), None);
+        assert_eq!(reg.text(EXPLORE_CMD, "DelegateExecute"), None);
+        let saved = backup.load().unwrap().unwrap();
+        assert!(
+            saved.entries.iter().all(|e| e.key == COM_SERVER),
+            "only the class is backed up so far: {saved:?}"
+        );
+
+        let writes = reg.writes();
+        let verbs = apply_mode(&reg, &backup, exe(), false, VerbMode::Com).unwrap();
+        assert_eq!(
+            verbs.written, 4,
+            "two commands and two DelegateExecute values"
+        );
+        assert_eq!(reg.writes() - writes, 4, "the class is not written again");
+        for key in [OPEN_CMD, EXPLORE_CMD] {
+            assert_eq!(
+                reg.text(key, "DelegateExecute").as_deref(),
+                Some(ARKE_CLSID)
+            );
+        }
+        restore(&reg, &backup).unwrap();
+        assert_eq!(reg.snapshot(), before);
+
+        // The class alone, as left when the setting goes off right after it.
+        let reg = MemoryRegistry::default();
+        register_com_class(&reg, &backup, exe()).unwrap();
+        restore(&reg, &backup).unwrap();
+        assert!(reg.snapshot().is_empty(), "{:?}", reg.snapshot());
+    }
+
     #[test]
     fn describes_the_com_class() {
         let reg = MemoryRegistry::default();
-        apply_mode(&reg, &MemoryBackup::default(), exe(), false, true).unwrap();
+        apply_mode(&reg, &MemoryBackup::default(), exe(), false, VerbMode::Com).unwrap();
         let lines = describe(&reg, exe());
         assert_eq!(
             lines[0],
@@ -1346,7 +1445,7 @@ mod tests {
         let before = reg.snapshot();
         apply(&reg, &backup, exe()).unwrap();
         // As if the process died right after saving the backup: undo every write.
-        for spec in specs(exe(), true, false) {
+        for spec in specs(exe(), true, VerbMode::Command) {
             if spec.key == OPEN_CMD && spec.value == "DelegateExecute" {
                 reg.put(OPEN_CMD, "DelegateExecute", STOCK_DELEGATE);
             } else {

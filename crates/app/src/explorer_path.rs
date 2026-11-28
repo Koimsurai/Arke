@@ -1018,10 +1018,15 @@ impl Explorer {
                 });
                 // Every level can shrink, so a name too long for the bar truncates instead of
                 // running over what's next to it; the current folder gives way last. The "…"
-                // never shrinks: squeezed, it would leave a stray ›.
+                // never shrinks: squeezed, it would leave a stray ›. Nor does the drive (the
+                // first level), which stays only while it fits whole (`collapse_crumbs`): the
+                // levels are decided from the bar's width on the frame before, so while the bar
+                // narrows (a resize, the preview pane sliding in) they come out a few pixels
+                // over, and the drive's short name, squeezed by them, blinked out (#538).
                 let shrink = match crumb {
                     None => 0.,
                     Some(_) if is_last => 1.,
+                    Some(_) if i == 0 => 0.,
                     Some(_) => CRUMBS_GIVE_WAY,
                 };
                 let piece = match crumb {

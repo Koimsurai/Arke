@@ -870,6 +870,34 @@ fn the_dual_pane_toggles_fold_into_the_menu(cx: &mut TestAppContext) {
     assert!(checked.contains(&sync), "on: {checked:?}");
 }
 
+/// #538: while the window narrows a frame at a time (as a resize does, or the preview pane sliding
+/// in), the path bar's levels fold into "…" and the drive stays whole in every frame. The levels
+/// are decided from the bar's width on the frame before, so they come out a little over; the
+/// middle levels and the current folder take that, never the drive's short name.
+#[gpui::test]
+fn the_drive_stays_whole_while_the_path_folds(cx: &mut TestAppContext) {
+    let (_ws, _view, cx) = open_deep(cx, 1600.);
+    let drive = bounds(cx, "crumb-0").size.width;
+    let mut folded = false;
+    for width in (600..=1600_u16).rev().step_by(23) {
+        cx.simulate_resize(size(px(f32::from(width)), px(650.)));
+        // One frame per size, as an animation draws: no settling in between.
+        cx.run_until_parked();
+        if bounds(cx, "path-bar").size.width < px(260.) {
+            break;
+        }
+        let crumb = cx
+            .debug_bounds("crumb-0")
+            .unwrap_or_else(|| panic!("{width} px: the drive is drawn"));
+        assert!(
+            near(crumb.size.width, drive, 0.5),
+            "{width} px: the drive is {crumb:?}, whole {drive:?}"
+        );
+        folded |= cx.debug_bounds("crumb-more").is_some();
+    }
+    assert!(folded, "the path folded on the way");
+}
+
 /// Resizes the window and draws the way the platform does: a frame at the new size, then one
 /// for each next-frame request, and no other. [`settle`] refreshes on its own, which hid a row
 /// that asked for its second frame while drawing, where the request is dropped (#528).

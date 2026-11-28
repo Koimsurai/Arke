@@ -2538,9 +2538,11 @@ impl Workspace {
     /// Saves the sidebar width the drag ended on (if one was under way).
     pub(crate) fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
         if !std::mem::take(&mut self.sidebar_resizing) {
+            log::debug!(target: "arke::splitter", "sidebar-edge: no drag under way");
             return;
         }
         let width = theme::sidebar_base();
+        log::debug!(target: "arke::splitter", "sidebar-edge: drag ended, width {width} saved");
         SettingsStore::global(cx).update(cx, |s, cx| s.update(|st| st.sidebar_width = width, cx));
         cx.notify();
     }
@@ -2587,6 +2589,7 @@ impl Workspace {
                 .dragging(self.sidebar_resizing)
                 .on_start(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                     this.sidebar_resizing = true;
+                    log::debug!(target: "arke::splitter", "sidebar-edge: dragging");
                     cx.notify();
                 }))
                 .on_double_click(cx.listener(|_, _: &MouseDownEvent, _, cx| {
@@ -2866,6 +2869,7 @@ impl Workspace {
             .rounded(theme::R_FULL)
             .bg(theme::line_strong());
         let handle = Splitter::new("pane-gutter", gpui::CursorStyle::ResizeColumn)
+            .round(true)
             .dragging(self.resizing)
             .on_start(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.resizing = true;

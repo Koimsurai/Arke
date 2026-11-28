@@ -1699,11 +1699,16 @@ impl Explorer {
             || self.on_remote(),
             |(p, _)| arke_core::remote::is_remote(p),
         );
-        let entries = if on_server {
+        let mut entries = if on_server {
             remote_menu(entries)
         } else {
             entries
         };
+        // Opened from the pane row's "⋯" with Sort folded into it (#474): its choices come along.
+        // The background menu has them anyway.
+        if std::mem::take(&mut self.row_fold.menu_adds_sort) && !targets.is_empty() {
+            entries.extend([MenuEntry::Separator, self.sort_submenu()]);
+        }
         let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);
         // Shift held, as File Explorer: the Windows menu includes commands registered to show
         // only then (#272).

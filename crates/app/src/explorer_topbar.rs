@@ -400,12 +400,16 @@ impl Explorer {
         )
         .into_any_element();
         let chip = self.render_filter_chip(cx);
-        let info = if !self.search_mode && !self.selection.is_empty() {
-            self.render_selection_actions(window, cx)
-        } else {
-            self.render_folder_actions(self.compact_bar(), cx)
+        let selecting = !self.search_mode && !self.selection.is_empty();
+        let fold = self.row_layout(selecting, window);
+        self.row_fold.sort_in_more = fold.sort_folded;
+        let info = match fold.selection {
+            Some(layout) if selecting => self.render_selection_actions(layout, cx),
+            _ => self.render_folder_actions(self.compact_bar(), cx),
         };
-        let view = self.render_view_controls(window, cx).into_any_element();
+        let view = self
+            .render_view_controls(&fold, window, cx)
+            .into_any_element();
         if self.toolbar.end() {
             window.request_animation_frame();
         }

@@ -883,6 +883,8 @@ pub(crate) struct Explorer {
     top_row: top_bar::TopRow,
     /// The pane row's buttons from the keyboard (F6).
     toolbar: toolbar::ToolbarKeys,
+    /// The keyboard in the row's flyouts, Sort and View options.
+    flyout: toolbar::FlyoutKeys,
     filter_input: Entity<TextInput>,
     /// Filter box text, excluding uncommitted IME composition.
     pub(crate) query: String,
@@ -1307,6 +1309,7 @@ impl Explorer {
             row_fold: RowFold::default(),
             top_row: top_bar::TopRow::default(),
             toolbar: toolbar::ToolbarKeys::new(cx.focus_handle()),
+            flyout: toolbar::FlyoutKeys::new(cx.focus_handle()),
             filter_input,
             query: String::new(),
             filtered: None,

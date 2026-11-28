@@ -143,6 +143,7 @@ fn pane_min() -> gpui::Pixels {
 pub(crate) fn bind_keys(cx: &mut App) {
     settings_panel::bind_keys(cx);
     uninstall_page::bind_keys(cx);
+    welcome::bind_keys(cx);
     crate::net_dialog::bind_keys(cx);
     crate::archive_password::bind_keys(cx);
     crate::recycle_bin::bind_keys(cx);
@@ -3356,7 +3357,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenWorkspaces, window, cx| {
                 this.open_workspaces(window, cx);
             }))
-            .on_action(|_: &OpenSetupGuide, window, cx| welcome::open_guide(window, cx))
+            .on_action(|_: &OpenSetupGuide, window, cx| welcome::open_guide(None, window, cx))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(|this, a: &crate::explorer::FocusComputerSearch, window, cx| {
                 this.page_key(window, cx, |e, window, cx| e.focus_computer_search(a, window, cx));

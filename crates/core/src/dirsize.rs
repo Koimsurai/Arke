@@ -268,15 +268,16 @@ pub struct Space {
 impl Space {
     /// The `n` biggest folders directly inside, biggest first; empty ones are left out.
     pub fn largest(&self, n: usize) -> Vec<(PathBuf, u64)> {
-        let mut all: Vec<(PathBuf, u64)> = self
+        // Sorted by reference: a folder with thousands of subfolders is asked about on every
+        // frame, and only the `n` that stay are copied.
+        let mut all: Vec<&(PathBuf, u64)> = self
             .children
             .iter()
             .filter(|(_, bytes)| *bytes > 0)
-            .cloned()
             .collect();
         all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         all.truncate(n);
-        all
+        all.into_iter().cloned().collect()
     }
 }
 
@@ -373,16 +374,85 @@ pub fn usage(
         state: parking_lot::Mutex::new(WalkState {
             space,
             todo,
+            groups: Vec::new(),
             busy: 0,
             walkers: WALKERS,
         }),
         work: parking_lot::Condvar::new(),
         finished: parking_lot::Condvar::new(),
     };
+    run_walkers(fs, cluster, cancel, &walk, |s| s.space.clone(), progress);
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(walk.state.into_inner().space)
+}
+
+/// Walks everything below each of the folders `roots` at once, with the same [`WALKERS`] threads
+/// as [`usage`] (one pass, so they stay busy across folders), and counts it. Each root names the
+/// group (below `groups`) its totals go to; the root folders themselves are not counted, as
+/// [`usage`] doesn't count its root. `progress` is called now and then with every group's total
+/// so far (on the calling thread). `None` when cancelled. A root that can't be read, or a
+/// folder below it, makes its group `partial`. No thread starts when there are no roots.
+pub fn usage_of_many(
+    fs: &dyn Fs,
+    roots: Vec<(PathBuf, usize)>,
+    groups: usize,
+    cluster: u64,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&[Usage]),
+) -> Option<Vec<Usage>> {
+    if roots.is_empty() {
+        return if cancel.load(Ordering::Relaxed) {
+            None
+        } else {
+            Some(vec![Usage::default(); groups])
+        };
+    }
+    crate::fs::debug_assert_not_ui_thread("usage_of_many", &roots[0].0);
+    let walk = Walk {
+        state: parking_lot::Mutex::new(WalkState {
+            space: Space {
+                usage: Usage::default(),
+                // The walkers add each group's bytes here, which nobody reads.
+                children: vec![(PathBuf::new(), 0); groups],
+            },
+            todo: roots,
+            groups: vec![Usage::default(); groups],
+            busy: 0,
+            walkers: WALKERS,
+        }),
+        work: parking_lot::Condvar::new(),
+        finished: parking_lot::Condvar::new(),
+    };
+    run_walkers(
+        fs,
+        cluster,
+        cancel,
+        &walk,
+        |s| s.groups.clone(),
+        &mut |groups: &Vec<Usage>| progress(groups),
+    );
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(walk.state.into_inner().groups)
+}
+
+/// Runs [`WALKERS`] threads on `walk` until it is done, cancelled or they are all gone, calling
+/// `report` every [`PROGRESS_TICK`] with what `snapshot` takes from the shared state.
+fn run_walkers<T>(
+    fs: &dyn Fs,
+    cluster: u64,
+    cancel: &AtomicBool,
+    walk: &Walk,
+    snapshot: impl Fn(&WalkState) -> T,
+    report: &mut dyn FnMut(&T),
+) {
     std::thread::scope(|scope| {
         let mut walkers = Vec::with_capacity(WALKERS);
         for _ in 0..WALKERS {
-            walkers.push(scope.spawn(|| walker(fs, cluster, cancel, &walk)));
+            walkers.push(scope.spawn(|| walker(fs, cluster, cancel, walk)));
         }
         let mut state = walk.state.lock();
         while !(cancel.load(Ordering::Relaxed)
@@ -390,14 +460,20 @@ pub fn usage(
             || state.walkers == 0)
         {
             walk.finished.wait_for(&mut state, PROGRESS_TICK);
-            let snapshot = state.space.clone();
+            let shot = snapshot(&state);
             drop(state);
-            progress(&snapshot);
+            report(&shot);
             state = walk.state.lock();
         }
         // No walker left with folders still to list (each one panicked): those weren't counted.
         if !state.todo.is_empty() {
             state.space.usage.partial = true;
+            let st = &mut *state;
+            for (_, group) in &st.todo {
+                if let Some(g) = st.groups.get_mut(*group) {
+                    g.partial = true;
+                }
+            }
         }
         drop(state);
         walk.work.notify_all();
@@ -409,10 +485,6 @@ pub fn usage(
             }
         }
     });
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    Some(walk.state.into_inner().space)
 }
 
 /// What [`usage`]'s walkers share.
@@ -428,6 +500,9 @@ struct WalkState {
     space: Space,
     /// Folders still to list, each with the child of the root it is in.
     todo: Vec<(PathBuf, usize)>,
+    /// With [`usage_of_many`]: each group's totals, by the number `todo` names it with. Empty
+    /// for [`usage`].
+    groups: Vec<Usage>,
     /// Folders being listed right now.
     busy: usize,
     /// Walkers still running.
@@ -441,6 +516,8 @@ struct Leaving<'a> {
     walk: &'a Walk,
     /// Between taking a folder and adding what was in it.
     listing: bool,
+    /// The child (group) of the folder being listed.
+    child: usize,
 }
 
 impl Drop for Leaving<'_> {
@@ -449,6 +526,10 @@ impl Drop for Leaving<'_> {
         if self.listing {
             state.busy -= 1;
             state.space.usage.partial = true;
+            let child = self.child;
+            if let Some(g) = state.groups.get_mut(child) {
+                g.partial = true;
+            }
         }
         state.walkers -= 1;
         drop(state);
@@ -467,6 +548,7 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
     let mut leaving = Leaving {
         walk,
         listing: false,
+        child: 0,
     };
     let mut state = walk.state.lock();
     loop {
@@ -482,6 +564,7 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
         };
         state.busy += 1;
         leaving.listing = true;
+        leaving.child = child;
         drop(state);
         let mut usage = Usage::default();
         let mut bytes = 0;
@@ -510,6 +593,9 @@ fn walker(fs: &dyn Fs, cluster: u64, cancel: &AtomicBool, walk: &Walk) {
         state = walk.state.lock();
         state.space.usage += usage;
         state.space.children[child].1 += bytes;
+        if let Some(g) = state.groups.get_mut(child) {
+            *g += usage;
+        }
         let more = !found.is_empty();
         state.todo.extend(found);
         state.busy -= 1;
@@ -999,6 +1085,103 @@ mod tests {
         );
         assert_eq!(profiles.way_down(Path::new(r"C:\Users\me")), None);
         assert_eq!(profiles.way_down(Path::new(r"D:\")), None);
+    }
+
+    /// Several roots in one pass count the same as walking each one alone, each into its own
+    /// group; an unreadable root makes only its group partial; no roots start nothing.
+    #[test]
+    fn usage_of_many_matches_walking_each_root() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\a", vec![file("a.mp4", 5000), dir("x")]);
+        fs.insert_dir(r"C:\a\x", vec![file("y.txt", 7), dir("z")]);
+        fs.insert_dir(r"C:\a\x\z", vec![file("deep.rs", 11)]);
+        fs.insert_dir(r"C:\b", vec![file("b.pdf", 300)]);
+        // C:\gone can't be listed.
+        let cancel = AtomicBool::new(false);
+        let cluster = 4096;
+        let roots = vec![
+            (PathBuf::from(r"C:\a"), 0),
+            (PathBuf::from(r"C:\b"), 1),
+            (PathBuf::from(r"C:\gone"), 2),
+            (PathBuf::from(r"C:\a\x"), 0),
+        ];
+        let many = usage_of_many(&*fs, roots, 3, cluster, &cancel, &mut |_| {}).unwrap();
+        let alone = |path: &str| {
+            usage(&*fs, Path::new(path), cluster, &cancel, &mut |_| {})
+                .unwrap()
+                .usage
+        };
+        let mut first = alone(r"C:\a");
+        first += alone(r"C:\a\x");
+        assert_eq!(many[0], first);
+        assert_eq!(many[1], alone(r"C:\b"));
+        assert_eq!(many[2], alone(r"C:\gone"));
+        assert!(many[2].partial && !many[0].partial && !many[1].partial);
+        let none = usage_of_many(&*fs, Vec::new(), 2, 0, &cancel, &mut |_| {
+            panic!("no report")
+        });
+        assert_eq!(none, Some(vec![Usage::default(); 2]));
+    }
+
+    /// The pass reports what is counted so far while it runs, never more than the end result.
+    #[test]
+    fn usage_of_many_reports_progress() {
+        let fs = FakeFs::new();
+        fs.insert_dir(r"C:\a", vec![file("f", 10), dir("slow")]);
+        fs.insert_dir(r"C:\a\slow", vec![file("g", 5)]);
+        fs.set_delay(r"C:\a\slow", std::time::Duration::from_millis(350));
+        let cancel = AtomicBool::new(false);
+        let mut seen: Vec<u64> = Vec::new();
+        let done = usage_of_many(
+            &*fs,
+            vec![(PathBuf::from(r"C:\a"), 0)],
+            1,
+            0,
+            &cancel,
+            &mut |groups| seen.push(groups[0].bytes),
+        )
+        .unwrap();
+        assert_eq!(done[0].bytes, 15);
+        assert!(seen.len() >= 2, "reported while walking: {seen:?}");
+        assert!(seen.iter().all(|b| *b <= 15));
+    }
+
+    /// Cancelling stops the pass: `None`, well before all the folders are listed.
+    #[test]
+    fn usage_of_many_stops_when_cancelled() {
+        let fs = FakeFs::new();
+        let names: Vec<String> = (0..40).map(|i| format!("d{i}")).collect();
+        fs.insert_dir(r"C:\a", names.iter().map(|n| dir(n.as_str())).collect());
+        for name in &names {
+            let path = Path::new(r"C:\a").join(name);
+            fs.set_delay(path.clone(), std::time::Duration::from_millis(100));
+            fs.insert_dir(path, vec![file("f", 1)]);
+        }
+        let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let result = usage_of_many(
+            &*fs,
+            vec![(PathBuf::from(r"C:\a"), 0)],
+            1,
+            0,
+            &cancel,
+            &mut |_| cancel.store(true, Ordering::Relaxed),
+        );
+        assert_eq!(result, None);
+        // All 40 would take 40 * 100 ms / WALKERS = 1 s.
+        assert!(started.elapsed() < std::time::Duration::from_millis(800));
+        assert!(fs.read_dir_calls() < 41);
+        let before = fs.read_dir_calls();
+        let again = usage_of_many(
+            &*fs,
+            vec![(PathBuf::from(r"C:\a"), 0)],
+            1,
+            0,
+            &cancel,
+            &mut |_| {},
+        );
+        assert_eq!(again, None, "already cancelled");
+        assert!(fs.read_dir_calls() <= before + WALKERS);
     }
 
     /// A walker that panics (a bug, a driver's) doesn't hang the count nor take it down: what

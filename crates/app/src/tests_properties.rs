@@ -335,6 +335,31 @@ fn counting_can_be_stopped(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("props-stop").is_none());
 }
 
+/// A disk that never answers (the first listing of the folder hangs) holds up the count, never
+/// the window: it is built, drawn and takes clicks, and Stop ends the wait.
+#[gpui::test]
+fn a_hung_disk_never_freezes_the_window(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\big", vec![file("top", 1000)]);
+    fs.hang(r"C:\big");
+    let shell = Arc::new(FakeShell::default());
+    let (view, cx) = props(cx, &fs, &shell, &[(r"C:\big", true)]);
+    ready(cx, &view);
+
+    assert!(view.update(cx, |v, _| v.is_counting_for_test()));
+    assert!(cx.debug_bounds("props-hero").is_some(), "drawn");
+    cx.run_until_parked();
+    click(cx, "props-stop");
+    assert!(view.update(cx, |v, _| v.is_stopped_for_test()));
+    assert!(cx.debug_bounds("props-stop").is_none());
+
+    // The listing is let go: the worker ends, and nothing it says changes the window.
+    fs.release(Path::new(r"C:\big"));
+    std::thread::sleep(Duration::from_millis(100));
+    cx.run_until_parked();
+    assert!(view.update(cx, |v, _| v.is_stopped_for_test()));
+}
+
 /// A cloud file that is not on this device: no icon is read for it, no program is asked about its
 /// content, and it takes no space on disk.
 #[gpui::test]

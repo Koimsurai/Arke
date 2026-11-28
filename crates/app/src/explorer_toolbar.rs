@@ -12,6 +12,9 @@
 //! The row takes the keyboard only through F6 or Tab: it tracks its focus handle only while that
 //! handle is focused, so a click on a button leaves the keyboard where it was (in the list).
 //! Buttons are recorded only while the row has the focus, so it costs nothing more otherwise.
+//!
+//! The row's flyouts, Sort and View options, work the same way once Space or Enter opened them
+//! (see [`FlyoutKeys`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -21,7 +24,8 @@ use gpui::{
     prelude::*,
 };
 
-use super::Explorer;
+use super::{Explorer, ViewMode};
+use crate::settings::{Density, Settings};
 
 /// What pressing a button does: its click.
 type Press = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -318,4 +322,261 @@ impl Explorer {
             press(event, window, cx);
         }
     }
+}
+
+// ───────────────────────── The row's flyouts ─────────────────────────
+
+/// The keyboard in the row's flyouts, Sort and View options (#322). Opened from the keyboard or
+/// by a screen reader, a flyout takes the focus, on its checked choice: Up and Down (and Tab) move
+/// between its choices, the one the keyboard is on is read as focused and shows the ring, Space
+/// and Enter pick it, Left and Right move the icon size slider, and Escape closes the flyout and
+/// goes back to its button. Like the row, the flyout is one stop: the focus is on the flyout, its
+/// choices are read as focused in turn (`aria_active_descendant`). Opened with the mouse, it
+/// leaves the focus where it was, as before.
+pub(super) struct FlyoutKeys {
+    focus: FocusHandle,
+    /// The choice the keyboard is on, in [`Explorer::flyout_choices`].
+    at: usize,
+    /// Where the focus was when the flyout took it; `None`: the row.
+    back: Option<FocusHandle>,
+}
+
+impl FlyoutKeys {
+    /// Keys for flyouts focused with `focus`.
+    pub(super) const fn new(focus: FocusHandle) -> Self {
+        Self {
+            focus,
+            at: 0,
+            back: None,
+        }
+    }
+}
+
+/// A choice in a flyout, in the order the keyboard goes through them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Choice {
+    /// Sort: a column.
+    SortBy(arke_core::SortColumn),
+    /// Sort: ascending (`true`) or descending.
+    SortOrder(bool),
+    /// View options: a layout.
+    Layout(ViewMode),
+    /// View options: the icon size slider.
+    IconSize,
+    /// View options: a row density.
+    Density(Density),
+    /// View options: a switch.
+    Switch(ViewSwitch),
+}
+
+/// The view options flyout's switches (the same settings as in Settings).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ViewSwitch {
+    /// Group rows (not in Columns).
+    GroupRows,
+    /// The Details tree (Details only).
+    DetailsTree,
+    /// Hidden items.
+    ShowHidden,
+    /// File name extensions.
+    ShowExtensions,
+}
+
+impl ViewSwitch {
+    /// Whether it is on.
+    pub(super) const fn on(self, s: &Settings) -> bool {
+        match self {
+            Self::GroupRows => s.group_rows,
+            Self::DetailsTree => s.details_tree,
+            Self::ShowHidden => s.show_hidden,
+            Self::ShowExtensions => s.show_extensions,
+        }
+    }
+
+    /// Turns it the other way.
+    pub(super) const fn flip(self, s: &mut Settings) {
+        match self {
+            Self::GroupRows => s.group_rows = !s.group_rows,
+            Self::DetailsTree => s.details_tree = !s.details_tree,
+            Self::ShowHidden => s.show_hidden = !s.show_hidden,
+            Self::ShowExtensions => s.show_extensions = !s.show_extensions,
+        }
+    }
+}
+
+/// Whether a choice is the one the keyboard is on, and whether it shows the ring (by key).
+pub(super) type Mark = (bool, bool);
+
+impl Explorer {
+    /// The open flyout's choices, in order; none while neither is open.
+    pub(super) fn flyout_choices(&self) -> Vec<Choice> {
+        if self.sort_options_open {
+            super::sortopts::sort_choices()
+        } else if self.view_options_open {
+            self.view_choices()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Whether the open flyout has the keyboard.
+    pub(super) fn flyout_held(&self, window: &Window) -> bool {
+        self.flyout.focus.is_focused(window)
+    }
+
+    /// An open flyout's panel, which hears the keys while it has the keyboard. Only then does it
+    /// track its focus: otherwise a click in it would take the focus from the list.
+    pub(super) fn flyout_keys(
+        &self,
+        open: bool,
+        panel: Stateful<Div>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        if !open || !self.flyout_held(window) {
+            return panel;
+        }
+        panel
+            .track_focus(&self.flyout.focus)
+            .on_key_down(cx.listener(Self::flyout_key))
+            .on_click(cx.listener(Self::flyout_press))
+    }
+
+    /// How choice `ix` of the open flyout is drawn: read as focused while the flyout has the
+    /// keyboard and it is the one the keyboard is on, with the ring when by key.
+    pub(super) fn flyout_mark(&self, ix: Option<usize>, window: &Window) -> Mark {
+        let on = ix.is_some_and(|ix| ix == self.flyout.at) && self.flyout_held(window);
+        (on, on && window.last_input_was_keyboard())
+    }
+
+    /// A flyout was opened or closed from the keyboard or by a screen reader: open, it takes the
+    /// focus on choice `at`; closed, the focus goes back to `button` in the row.
+    pub(super) fn flyout_by_key(
+        &mut self,
+        open: bool,
+        at: usize,
+        button: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !open {
+            self.flyout_return(button, window, cx);
+            return;
+        }
+        self.flyout.back = window
+            .focused(cx)
+            .filter(|f| *f != self.flyout.focus && *f != self.toolbar.focus);
+        self.flyout.at = at;
+        window.focus(&self.flyout.focus, cx);
+        cx.notify();
+    }
+
+    /// A flyout closed: if it had the keyboard, the focus goes back where it was, to the row on
+    /// `button` unless it came from elsewhere.
+    pub(super) fn flyout_return(
+        &mut self,
+        button: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.flyout_held(window) {
+            return;
+        }
+        if let Some(back) = self.flyout.back.take() {
+            window.focus(&back, cx);
+        } else {
+            self.toolbar.at = Some(button);
+            window.focus(&self.toolbar.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Keys in a flyout that has the keyboard (see [`FlyoutKeys`]).
+    pub(super) fn flyout_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let m = &event.keystroke.modifiers;
+        if m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        if key == "escape" && !m.shift {
+            let button = if self.sort_options_open {
+                "sort-options"
+            } else {
+                "view-options"
+            };
+            self.close_view_options(cx);
+            self.close_sort_options(cx);
+            self.flyout_return(button, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        let choices = self.flyout_choices();
+        let Some(last) = choices.len().checked_sub(1) else {
+            return;
+        };
+        let at = self.flyout.at.min(last);
+        let to = match (key, m.shift) {
+            ("left" | "right", false) if choices[at] == Choice::IconSize => {
+                let size = if key == "right" {
+                    self.icon_size.larger()
+                } else {
+                    self.icon_size.smaller()
+                };
+                if let Some(size) = size {
+                    self.pick_icon_size(size, cx);
+                }
+                at
+            }
+            ("up" | "left", false) | ("tab", true) => at.saturating_sub(1),
+            ("down" | "right" | "tab", false) => (at + 1).min(last),
+            ("home", false) => 0,
+            ("end", false) => last,
+            _ => return,
+        };
+        self.flyout.at = to;
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Space or Enter in a flyout that has the keyboard (a keyboard click, which GPUI gives the
+    /// focused element): picks the choice the keyboard is on, as a click on it does.
+    pub(super) fn flyout_press(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, ClickEvent::Keyboard(_)) {
+            return;
+        }
+        let choices = self.flyout_choices();
+        let Some(&choice) = choices.get(self.flyout.at) else {
+            return;
+        };
+        match choice {
+            Choice::SortBy(column) => self.pick_sort_column(column, cx),
+            Choice::SortOrder(ascending) => self.pick_sort_direction(ascending, cx),
+            Choice::Layout(ViewMode::Details) => {
+                self.view_details(&super::ViewDetails, window, cx);
+            }
+            Choice::Layout(ViewMode::Icons) => self.show_icons(cx),
+            Choice::Layout(ViewMode::Columns) => {
+                self.view_columns(&super::ViewColumns, window, cx);
+            }
+            // The arrows move it.
+            Choice::IconSize => {}
+            Choice::Density(density) => change(cx, |s| s.density = density),
+            Choice::Switch(switch) => change(cx, |s| switch.flip(s)),
+        }
+    }
+}
+
+/// Changes the settings (every tab follows).
+fn change(cx: &mut App, f: impl FnOnce(&mut Settings)) {
+    crate::settings::SettingsStore::global(cx).update(cx, |s, cx| s.update(f, cx));
 }

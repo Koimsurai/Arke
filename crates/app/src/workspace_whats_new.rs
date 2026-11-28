@@ -222,6 +222,14 @@ impl WhatsNewPage {
         })
     }
 
+    /// Opens or folds the notes of version `ix`.
+    fn toggle_section(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if !self.expanded.remove(&ix) {
+            self.expanded.insert(ix);
+        }
+        cx.notify();
+    }
+
     fn section(&self, ix: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let open = self.expanded.contains(&ix);
         let release = &section.release;
@@ -232,10 +240,30 @@ impl WhatsNewPage {
         } else {
             None
         };
+        // Read as "0.10.2 · What's new, date, tag": the version alone didn't say what the button
+        // is for (#322).
+        let spoken = || {
+            let mut name = format!("{} · {}", release.version, t!("whats_new.title"));
+            for part in release
+                .date
+                .iter()
+                .map(String::as_str)
+                .chain(tag.as_deref())
+            {
+                name.push_str(", ");
+                name.push_str(part);
+            }
+            name
+        };
         let header = div()
             .id(("whats-new-section", ix))
             .debug_selector(move || format!("whats-new-section-{ix}"))
-            .a11y(gpui::Role::Button, release.version.clone())
+            .a11y_lazy(gpui::Role::Button, spoken)
+            // Expanded or collapsed, and opened or folded by a screen reader's Expand and
+            // Collapse (#322).
+            .a11y_open_close(open, cx.entity().downgrade(), move |this, _, cx| {
+                this.toggle_section(ix, cx);
+            })
             .key_stop()
             .h(theme::h_row())
             .px(theme::s_12())
@@ -275,35 +303,69 @@ impl WhatsNewPage {
                     .child(tag.into_owned())
             }))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if !this.expanded.remove(&ix) {
-                    this.expanded.insert(ix);
-                }
-                cx.notify();
+                this.toggle_section(ix, cx);
             }));
-        let body = open.then(|| {
-            div()
-                .px(theme::s_16())
-                .pb(theme::s_12())
-                .flex()
-                .flex_col()
-                .gap(theme::s_4())
-                .children(release.blocks.iter().map(render_block))
-                .when(release.blocks.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .text_color(theme::text_muted())
-                            .child(t!("whats_new.no_notes").into_owned()),
-                    )
-                })
-        });
         div()
             .rounded(theme::r_8())
             .border_1()
             .border_color(theme::line())
             .overflow_hidden()
             .child(header)
-            .children(body)
+            .children(open.then(|| notes(ix, release)))
             .into_any_element()
+    }
+}
+
+/// An open version's notes. For a screen reader they are a group right after the version's
+/// button, which Tab stops at: it is read with the notes as its description, and each line is a
+/// text node of its own for reading line by line (#322).
+fn notes(ix: usize, release: &Release) -> AnyElement {
+    let spoken = crate::a11y::active().then(|| {
+        if release.blocks.is_empty() {
+            t!("whats_new.no_notes").into_owned()
+        } else {
+            let lines: Vec<String> = release.blocks.iter().map(block_text).collect();
+            lines.join("\n")
+        }
+    });
+    div()
+        .id(("whats-new-notes", ix))
+        .debug_selector(move || format!("whats-new-notes-{ix}"))
+        .a11y_lazy(gpui::Role::Group, || release.version.clone())
+        .a11y_node(move |node| {
+            if let Some(text) = spoken {
+                node.set_description(text);
+            }
+        })
+        .key_stop()
+        .px(theme::s_16())
+        .pb(theme::s_12())
+        .flex()
+        .flex_col()
+        .gap(theme::s_4())
+        .children(
+            release
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(line, block)| render_block(line, block)),
+        )
+        .when(release.blocks.is_empty(), |d| {
+            d.child(
+                div()
+                    .id("whats-new-no-notes")
+                    .a11y_text(|| t!("whats_new.no_notes").into_owned())
+                    .text_color(theme::text_muted())
+                    .child(t!("whats_new.no_notes").into_owned()),
+            )
+        })
+        .into_any_element()
+}
+
+/// A block's text as read out.
+fn block_text(block: &Block) -> String {
+    match block {
+        Block::Heading(text) | Block::Item(text) | Block::Text(text) => whats_new::plain(text),
     }
 }
 
@@ -312,7 +374,7 @@ impl WhatsNewPage {
     fn sections_shown(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let guide = self
             .guide
-            .then(|| super::welcome::whats_new_entry(cx))
+            .then(|| super::welcome::whats_new_entry(self.focus.clone(), cx))
             .flatten();
         guide
             .into_iter()
@@ -326,22 +388,25 @@ impl WhatsNewPage {
     }
 }
 
-fn render_block(block: &Block) -> AnyElement {
+/// One line of the notes, a text node for a screen reader (see [`notes`]).
+fn render_block(line: usize, block: &Block) -> AnyElement {
+    let spoken = || block_text(block);
+    let el = div().id(("whats-new-line", line)).a11y_text(spoken);
     match block {
-        Block::Heading(text) => div()
+        Block::Heading(text) => el
             .pt(theme::s_8())
             .text_size(theme::fs_12())
             .font_weight(theme::FW_STRONG)
             .text_color(theme::signal())
             .child(whats_new::plain(text))
             .into_any_element(),
-        Block::Item(text) => div()
+        Block::Item(text) => el
             .flex()
             .gap(theme::s_8())
             .child(div().flex_none().text_color(theme::text_muted()).child("•"))
             .child(div().flex_1().min_w_0().child(whats_new::plain(text)))
             .into_any_element(),
-        Block::Text(text) => div()
+        Block::Text(text) => el
             .pt(theme::s_4())
             .text_color(theme::text_muted())
             .child(whats_new::plain(text))

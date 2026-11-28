@@ -1308,3 +1308,54 @@ fn a_menu_that_fits_is_not_capped_and_does_not_scroll(cx: &mut TestAppContext) {
     let (_, footer) = view.update(cx, |v, _| v.context_menu.as_ref().unwrap().rows_for_test(0));
     assert_row_in_view(rows, row_drawn(&view, cx, 0, footer - 1), "the last row");
 }
+
+/// A submenu opened by resting on its row closes when the pointer rests on the icon buttons
+/// below the rows, as it does on any other row without a submenu (#549).
+#[gpui::test]
+fn a_submenu_closes_when_the_pointer_rests_on_the_icon_row(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\m", vec![file("a.txt", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\m");
+    wait_until(cx, &view, "load", loaded(r"C:\m"));
+    right_click(&view, cx, Some(0));
+    wait_until(cx, &view, "more options loaded", |v| {
+        v.context_menu.as_ref().is_some_and(|m| m.shell_state().0)
+    });
+    let more = format!("{} ›", t!("menu.more_options"));
+    let ix = menu_labels(&view, cx)
+        .unwrap()
+        .iter()
+        .position(|l| *l == more)
+        .expect("the menu has a 'more options' submenu row");
+    let (popup, _) = level_popup(&view, cx, 0).expect("placed");
+    let mut popup_cx = VisualTestContext::from_window(popup, &cx.cx);
+    let row = view
+        .update(cx, |v, _| {
+            v.context_menu
+                .as_ref()
+                .and_then(|m| m.submenu_row_for_test(0, ix))
+        })
+        .expect("the row is drawn")
+        .center();
+    popup_cx.simulate_mouse_move(row, None, Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    cx.run_until_parked();
+    assert_eq!(cues_and_depth(&view, cx).map(|c| c.1), Some(1), "opens");
+
+    let button = popup_cx
+        .debug_bounds("menu-action-Cut")
+        .expect("Cut drawn")
+        .center();
+    popup_cx.simulate_mouse_move(button, None, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        cues_and_depth(&view, cx).map(|c| c.1),
+        Some(1),
+        "not before the delay"
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    cx.run_until_parked();
+    assert_eq!(cues_and_depth(&view, cx).map(|c| c.1), Some(0), "closes");
+}

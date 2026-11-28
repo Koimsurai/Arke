@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arke_core::folder_handler::{self, BackupStore, FileBackup, Registry};
+use arke_core::folder_handler::{self, BackupStore, FileBackup, Registry, VerbMode};
 use gpui::{App, Entity};
 
 use crate::settings::SettingsStore;
@@ -63,34 +63,47 @@ impl Handler {
         self
     }
 
-    /// Registers in the mode the verbs have now, then, with a check, in the mode it finds: the
-    /// check needs the class's registration in place, and a check that passes again changes
-    /// nothing.
+    /// Registers the handler. Without a check the verbs keep reaching Arke the way they do now.
+    /// With one, only the COM class (and its backup entry) goes in first, since the check needs
+    /// it; the folder verbs are written once, after the check, straight in the mode it found. So
+    /// when COM works they never hold an empty `DelegateExecute` on the way, not even while
+    /// repairing a registration (#540). A check that passes again changes nothing.
     fn register(&self, win_e: bool) -> Result<folder_handler::Applied, folder_handler::Error> {
-        let now = folder_handler::uses_com(&*self.registry);
-        let first =
-            folder_handler::apply_mode(&*self.registry, &*self.backup, &self.exe, win_e, now)?;
-        let Some(check) = &self.com_check else {
-            return Ok(first);
+        let now = if folder_handler::uses_com(&*self.registry) {
+            VerbMode::Com
+        } else {
+            verbs_without_com()
         };
-        let com = check();
-        if com == now {
-            return Ok(first);
+        let Some(check) = &self.com_check else {
+            return folder_handler::apply_mode(
+                &*self.registry,
+                &*self.backup,
+                &self.exe,
+                win_e,
+                now,
+            );
+        };
+        let class = folder_handler::register_com_class(&*self.registry, &*self.backup, &self.exe)?;
+        let mode = if check() {
+            VerbMode::Com
+        } else {
+            verbs_without_com()
+        };
+        if mode != now {
+            log::info!(
+                "folder handler: folder verbs {}",
+                match mode {
+                    VerbMode::Com => "call Arke over COM",
+                    VerbMode::Command => "run the command (COM does not reach Arke)",
+                }
+            );
         }
-        log::info!(
-            "folder handler: folder verbs {}",
-            if com {
-                "call Arke over COM"
-            } else {
-                "run the command (COM does not reach Arke)"
-            }
-        );
-        let second =
-            folder_handler::apply_mode(&*self.registry, &*self.backup, &self.exe, win_e, com)?;
+        let verbs =
+            folder_handler::apply_mode(&*self.registry, &*self.backup, &self.exe, win_e, mode)?;
         Ok(folder_handler::Applied {
-            written: first.written + second.written,
-            repaired: first.repaired + second.repaired,
-            dropped: first.dropped + second.dropped,
+            written: class.written + verbs.written,
+            repaired: class.repaired + verbs.repaired,
+            dropped: verbs.dropped,
         })
     }
 
@@ -139,6 +152,16 @@ impl Handler {
             }
         }
     }
+}
+
+/// How the folder verbs reach Arke when COM is not known to: the check failed (DCOM was seen to
+/// refuse the per-user class on some per-machine installs under Program Files; see
+/// `win_folder_com`), or this Arke is not resident and cannot check while the verbs aren't using
+/// COM yet. For now they run the command, which takes an empty
+/// `DelegateExecute`: the shape some antivirus programs flag (#540). This is the one place to
+/// change once per-machine installs have been tried on a real machine.
+const fn verbs_without_com() -> VerbMode {
+    VerbMode::Command
 }
 
 /// `%APPDATA%\Arke`.
@@ -235,11 +258,15 @@ pub(crate) fn handled_by_this_exe() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arke_core::folder_handler::{MemoryBackup, MemoryRegistry};
+    use arke_core::folder_handler::{MemoryBackup, MemoryRegistry, RegValue};
     use gpui::TestAppContext;
     use std::time::{Duration, Instant};
 
     const DIR_CMD: &str = r"Software\Classes\Folder\shell\open\command";
+    const EXPLORE_CMD: &str = r"Software\Classes\Folder\shell\explore\command";
+    const COM_SERVER: &str =
+        r"Software\Classes\CLSID\{8F3B6C21-4E7A-4D2B-9C5E-A1D04F7E3340}\LocalServer32";
+    const STOCK_DELEGATE: &str = "{11dbb47c-a525-400b-9e80-a54615a090c0}";
 
     fn wait_for(cx: &mut TestAppContext, what: &str, done: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -343,6 +370,265 @@ mod tests {
             reg.snapshot().is_empty(),
             "turning off removes the class too"
         );
+    }
+
+    /// A [`MemoryRegistry`] that keeps the whole state after every change, so a test sees each
+    /// state the shell could have read in between.
+    #[derive(Default)]
+    struct Recording {
+        reg: MemoryRegistry,
+        states: parking_lot::Mutex<Vec<Vec<(String, String, String)>>>,
+    }
+
+    impl Recording {
+        fn record(&self) {
+            let state = self.reg.snapshot();
+            self.states.lock().push(state);
+        }
+
+        /// How many recorded states `bad` holds for.
+        fn count(&self, bad: impl Fn(&[(String, String, String)]) -> bool) -> usize {
+            self.states.lock().iter().filter(|state| bad(state)).count()
+        }
+    }
+
+    /// The folder verbs' command keys.
+    const VERBS: [&str; 2] = [DIR_CMD, EXPLORE_CMD];
+
+    /// A value in a [`MemoryRegistry::snapshot`], where keys and names are lower case.
+    fn value<'a>(state: &'a [(String, String, String)], key: &str, name: &str) -> Option<&'a str> {
+        let key = key.to_lowercase();
+        state
+            .iter()
+            .find(|(k, n, _)| *k == key && n == name)
+            .map(|(_, _, text)| text.as_str())
+    }
+
+    /// A folder verb has an empty `DelegateExecute`.
+    fn empty_delegate(state: &[(String, String, String)]) -> bool {
+        VERBS
+            .iter()
+            .any(|verb| value(state, verb, "delegateexecute") == Some(""))
+    }
+
+    /// A folder verb has a command without Arke's class id as its `DelegateExecute`.
+    fn command_without_arkes_delegate(state: &[(String, String, String)]) -> bool {
+        VERBS.iter().any(|verb| {
+            value(state, verb, "").is_some()
+                && value(state, verb, "delegateexecute")
+                    .is_none_or(|id| !id.eq_ignore_ascii_case(folder_handler::ARKE_CLSID))
+        })
+    }
+
+    /// A folder verb has a command with a missing or empty `DelegateExecute`.
+    fn command_without_a_delegate(state: &[(String, String, String)]) -> bool {
+        VERBS.iter().any(|verb| {
+            value(state, verb, "").is_some()
+                && value(state, verb, "delegateexecute").is_none_or(str::is_empty)
+        })
+    }
+
+    /// A folder verb names Arke's class while the class is not registered.
+    fn delegate_to_a_missing_class(state: &[(String, String, String)]) -> bool {
+        value(state, COM_SERVER, "").is_none()
+            && VERBS.iter().any(|verb| {
+                value(state, verb, "delegateexecute")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(folder_handler::ARKE_CLSID))
+            })
+    }
+
+    impl Registry for Recording {
+        fn read(&self, key: &str, value: &str) -> Result<Option<RegValue>, folder_handler::Error> {
+            self.reg.read(key, value)
+        }
+
+        fn key_exists(&self, key: &str) -> Result<bool, folder_handler::Error> {
+            self.reg.key_exists(key)
+        }
+
+        fn write(
+            &self,
+            key: &str,
+            value: &str,
+            data: &RegValue,
+        ) -> Result<(), folder_handler::Error> {
+            self.reg.write(key, value, data)?;
+            self.record();
+            Ok(())
+        }
+
+        fn delete_value(&self, key: &str, value: &str) -> Result<(), folder_handler::Error> {
+            self.reg.delete_value(key, value)?;
+            self.record();
+            Ok(())
+        }
+
+        fn delete_key_if_empty(&self, key: &str) -> Result<bool, folder_handler::Error> {
+            let gone = self.reg.delete_key_if_empty(key)?;
+            self.record();
+            Ok(gone)
+        }
+    }
+
+    /// When the check passes, the folder verbs go straight to Arke's class id: turning the setting
+    /// on, repairing a moved exe and repairing a half-missing registration never leave an empty
+    /// `DelegateExecute` on them, nor a command without Arke's class id next to it; the check runs
+    /// with the class registered and the verbs untouched, and turning off still restores exactly
+    /// (#540).
+    #[test]
+    fn a_passing_check_never_leaves_an_empty_delegate_on_the_folder_verbs() {
+        let rec = Arc::new(Recording::default());
+        let backup = Arc::new(MemoryBackup::default());
+        rec.reg.put(DIR_CMD, "DelegateExecute", STOCK_DELEGATE);
+        let before = rec.reg.snapshot();
+        let handler = |exe: &str| {
+            let seen = Arc::clone(&rec);
+            let exe_text = exe.to_owned();
+            Handler::new(
+                Arc::clone(&rec) as Arc<dyn Registry>,
+                Arc::clone(&backup) as Arc<dyn BackupStore>,
+                PathBuf::from(exe),
+            )
+            .with_com_check(Arc::new(move || {
+                assert_eq!(
+                    seen.reg.text(COM_SERVER, "").as_deref(),
+                    Some(format!(r#""{exe_text}""#).as_str()),
+                    "the class is registered before the check"
+                );
+                true
+            }))
+        };
+
+        // Turned on: the verbs are not touched before the check.
+        let fresh = Handler::new(
+            Arc::clone(&rec) as Arc<dyn Registry>,
+            Arc::clone(&backup) as Arc<dyn BackupStore>,
+            PathBuf::from(r"C:\Apps\Arke\arke.exe"),
+        )
+        .with_com_check({
+            let seen = Arc::clone(&rec);
+            Arc::new(move || {
+                assert_eq!(
+                    seen.reg.text(DIR_CMD, ""),
+                    None,
+                    "no command before the check"
+                );
+                assert_eq!(
+                    seen.reg.text(DIR_CMD, "DelegateExecute").as_deref(),
+                    Some(STOCK_DELEGATE),
+                    "the verbs are untouched before the check"
+                );
+                assert!(seen.reg.text(COM_SERVER, "").is_some());
+                true
+            })
+        });
+        fresh.sync(true, false);
+        for key in [DIR_CMD, EXPLORE_CMD] {
+            assert_eq!(
+                rec.reg.text(key, "DelegateExecute").as_deref(),
+                Some(folder_handler::ARKE_CLSID)
+            );
+        }
+        assert!(
+            backup
+                .load()
+                .unwrap()
+                .is_some_and(|b| b.entries.iter().any(|e| e.key == COM_SERVER)),
+            "the class is in the backup"
+        );
+
+        // The exe moved.
+        handler(r"E:\New\arke.exe").sync(true, false);
+        assert!(
+            rec.reg
+                .text(DIR_CMD, "")
+                .is_some_and(|t| t.contains(r"E:\New\arke.exe"))
+        );
+
+        // Something removed one of the values: the repair goes straight back to COM.
+        rec.reg.delete_value(DIR_CMD, "DelegateExecute").unwrap();
+        handler(r"E:\New\arke.exe").sync(true, false);
+        assert_eq!(
+            rec.reg.text(DIR_CMD, "DelegateExecute").as_deref(),
+            Some(folder_handler::ARKE_CLSID)
+        );
+
+        assert!(!rec.states.lock().is_empty(), "writes were recorded");
+        assert_eq!(rec.count(empty_delegate), 0, "{:?}", rec.states.lock());
+        assert_eq!(
+            rec.count(command_without_arkes_delegate),
+            0,
+            "a command never sits there without Arke's class id: {:?}",
+            rec.states.lock()
+        );
+
+        rec.states.lock().clear();
+        handler(r"E:\New\arke.exe").sync(false, false);
+        assert_eq!(rec.reg.snapshot(), before, "turning off restores exactly");
+        assert_eq!(
+            rec.count(|state| command_without_a_delegate(state) && state != before.as_slice()),
+            0,
+            "turning off never leaves a command without its DelegateExecute: {:?}",
+            rec.states.lock()
+        );
+        assert_eq!(
+            rec.count(delegate_to_a_missing_class),
+            0,
+            "the class goes last: {:?}",
+            rec.states.lock()
+        );
+    }
+
+    /// Turning off puts each verb's command back before its `DelegateExecute` and the COM class
+    /// last, whatever order the backup lists them in: as 0.10.2 wrote it (each command before its
+    /// `DelegateExecute`, the class after the verbs), as this build writes it (the class first,
+    /// each `DelegateExecute` before its command), or reversed (#540).
+    #[test]
+    fn turning_off_restores_in_a_safe_order_whatever_the_backup_order() {
+        for order in ["0.10.2", "this build", "reversed"] {
+            let rec = Arc::new(Recording::default());
+            let backup = Arc::new(MemoryBackup::default());
+            let exe = PathBuf::from(r"C:\Apps\Arke\arke.exe");
+            rec.reg.put(DIR_CMD, "DelegateExecute", STOCK_DELEGATE);
+            let before = rec.reg.snapshot();
+            if order == "0.10.2" {
+                // What 0.10.2 registered, and the order its backup lists the values in.
+                folder_handler::apply_scoped(&rec.reg, &*backup, &exe, true).unwrap();
+            }
+            let handler = Handler::new(
+                Arc::clone(&rec) as Arc<dyn Registry>,
+                Arc::clone(&backup) as Arc<dyn BackupStore>,
+                exe,
+            )
+            .with_com_check(Arc::new(|| true));
+            handler.sync(true, true);
+            assert_eq!(
+                rec.reg.text(EXPLORE_CMD, "DelegateExecute").as_deref(),
+                Some(folder_handler::ARKE_CLSID),
+                "{order}"
+            );
+            if order == "reversed" {
+                let mut saved = backup.load().unwrap().unwrap();
+                saved.entries.reverse();
+                backup.save(&saved).unwrap();
+            }
+
+            rec.states.lock().clear();
+            handler.sync(false, true);
+            assert_eq!(rec.reg.snapshot(), before, "{order}: restored exactly");
+            assert_eq!(
+                rec.count(|state| command_without_a_delegate(state) && state != before.as_slice()),
+                0,
+                "{order}: a command without its DelegateExecute: {:?}",
+                rec.states.lock()
+            );
+            assert_eq!(
+                rec.count(delegate_to_a_missing_class),
+                0,
+                "{order}: a verb names the class after it is gone: {:?}",
+                rec.states.lock()
+            );
+        }
     }
 
     #[gpui::test]

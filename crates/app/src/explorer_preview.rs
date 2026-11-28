@@ -659,6 +659,15 @@ fn gzip_summary(inner: &GzipInner) -> String {
     }
 }
 
+/// A Markdown file's preview: images show their description, or a localized placeholder (#547).
+fn markdown_preview(text: &str) -> PreviewData {
+    let placeholder = t!("preview.md_image");
+    PreviewData::Markdown(arke_core::markdown::parse_with(
+        &markdown_lines(text),
+        &placeholder,
+    ))
+}
+
 /// Read and decode on a background thread.
 fn load(
     fs: &dyn Fs,
@@ -755,7 +764,7 @@ fn load(
                 return PreviewData::Nothing;
             };
             if is_markdown(path) {
-                return PreviewData::Markdown(arke_core::markdown::parse(&markdown_lines(&text)));
+                return markdown_preview(&text);
             }
             let lang = path
                 .extension()

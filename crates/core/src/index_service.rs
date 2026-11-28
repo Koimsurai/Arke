@@ -701,40 +701,69 @@ impl IndexService {
     /// answered from the index in one pass when it covers `dir` live, as
     /// [`Self::child_dir_sizes`] does. Folders the index has no contents for are walked and
     /// added, other people's profiles too (`profiles`: the service lists them without contents).
-    /// `None`: not covered, inside one of those profiles, or cancelled; walk instead. Background
-    /// threads only.
+    /// Those walks are one parallel pass
+    /// ([`crate::dirsize::usage_of_many`]), and `progress` is called with the running total (the
+    /// index's part plus what is walked so far) while that goes on. `None`: not covered, inside
+    /// one of those profiles, or cancelled; walk instead. Background threads only.
     pub fn usage_below(
         &self,
         dir: &Path,
         cluster: u64,
         profiles: Option<&crate::dirsize::Profiles>,
         cancel: &AtomicBool,
+        progress: &mut dyn FnMut(&crate::dirsize::Space),
     ) -> Option<crate::dirsize::Space> {
         if profiles.is_some_and(|p| p.hidden(dir)) {
             return None;
         }
         let (index, overlay) = self.live_index_for(dir)?;
         let (direct, children) = index.usage_below(dir, &overlay, cluster, cancel)?;
+        // What the index holds, and the folders it has no contents for: all of those are walked
+        // together in one pass (the walkers stay busy across folders), each into its child's group.
+        let mut index_usage = direct;
+        let mut roots: Vec<(PathBuf, usize)> = Vec::new();
+        for (i, child) in children.iter().enumerate() {
+            index_usage += child.usage;
+            roots.extend(child.unindexed.iter().map(|path| (path.clone(), i)));
+        }
+        let mut report = |walked: &[crate::dirsize::Usage]| {
+            let mut usage = index_usage;
+            let mut so_far = crate::dirsize::Space {
+                usage: index_usage,
+                children: Vec::with_capacity(children.len()),
+            };
+            for (child, more) in children.iter().zip(walked) {
+                usage += *more;
+                so_far
+                    .children
+                    .push((dir.join(&child.name), child.usage.bytes + more.bytes));
+            }
+            so_far.usage = usage;
+            progress(&so_far);
+        };
+        // Nothing to walk: no thread, no report (the caller has the whole answer at once).
+        let walked = if roots.is_empty() {
+            None
+        } else {
+            let groups = children.len();
+            let walked = crate::dirsize::usage_of_many(
+                self.shared.fs.as_ref(),
+                roots,
+                groups,
+                cluster,
+                cancel,
+                &mut report,
+            );
+            Some(walked?)
+        };
         let mut space = crate::dirsize::Space {
             usage: direct,
             children: Vec::with_capacity(children.len()),
         };
-        for child in children {
+        for (i, child) in children.into_iter().enumerate() {
             let mut usage = child.usage;
-            for path in &child.unindexed {
-                let walked = crate::dirsize::usage(
-                    self.shared.fs.as_ref(),
-                    path,
-                    cluster,
-                    cancel,
-                    &mut |_| {},
-                );
-                match walked {
-                    // The folder itself is counted already, with the index's folders.
-                    Some(more) => usage += more.usage,
-                    None if cancel.load(Ordering::Relaxed) => return None,
-                    None => usage.partial = true,
-                }
+            if let Some(more) = walked.as_ref().and_then(|w| w.get(i)) {
+                usage += *more;
             }
             space.usage += usage;
             space.children.push((dir.join(&child.name), usage.bytes));
@@ -3228,21 +3257,123 @@ mod tests {
             );
             wait("journal caught up", || ready(&svc) && svc.status().live);
             let users = svc
-                .usage_below(Path::new(r"C:\users"), 0, Some(&profiles), &cancel)
+                .usage_below(
+                    Path::new(r"C:\users"),
+                    0,
+                    Some(&profiles),
+                    &cancel,
+                    &mut |_| {},
+                )
                 .expect("from the index");
             assert_eq!(users.usage.bytes, 310, "listed: {listed}");
             if listed {
                 assert!(users.usage.partial, "Bob's can't be read");
             }
             let mine = svc
-                .usage_below(Path::new(r"C:\Users\me"), 0, Some(&profiles), &cancel)
+                .usage_below(
+                    Path::new(r"C:\Users\me"),
+                    0,
+                    Some(&profiles),
+                    &cancel,
+                    &mut |_| {},
+                )
                 .expect("from the index");
             assert_eq!((mine.usage.bytes, mine.usage.partial), (10, false));
-            let inside =
-                svc.usage_below(Path::new(r"C:\Users\Default"), 0, Some(&profiles), &cancel);
+            let inside = svc.usage_below(
+                Path::new(r"C:\Users\Default"),
+                0,
+                Some(&profiles),
+                &cancel,
+                &mut |_| {},
+            );
             assert_eq!(inside, None, "walked instead");
             drop(svc);
         }
+    }
+
+    /// Build folders the index skips are walked together after its part: the totals are those of
+    /// a full walk, the running totals grow while that goes on (starting from the index's part),
+    /// a count with nothing skipped doesn't report, and cancelling gives up.
+    #[test]
+    fn usage_below_walks_skipped_folders_together_and_reports() {
+        let (_, cache, _tmp) = temp_cache("unindexed");
+        let fs = FakeFs::new();
+        let file = |name: &str, size| Entry::new(name, EntryKind::File, size, None, 0);
+        let folder = |name: &str| Entry::new(name, EntryKind::Dir, 0, None, 0x10);
+        fs.insert_dir(r"C:\", vec![folder("proj"), folder("docs")]);
+        fs.insert_dir(
+            r"C:\proj",
+            vec![
+                file("main.rs", 10),
+                file("Cargo.toml", 1),
+                folder("target"),
+                folder("sub"),
+            ],
+        );
+        fs.insert_dir(r"C:\proj\target", vec![file("a.o", 1000), folder("deep")]);
+        fs.insert_dir(r"C:\proj\target\deep", vec![file("b.o", 200)]);
+        fs.insert_dir(
+            r"C:\proj\sub",
+            vec![file("s.rs", 5), folder("node_modules")],
+        );
+        fs.insert_dir(r"C:\proj\sub\node_modules", vec![file("x.js", 30)]);
+        fs.insert_dir(r"C:\docs", vec![file("a.pdf", 50)]);
+        fs.set_delay(r"C:\proj\target", Duration::from_millis(350));
+        let journal = FakeJournal::new(3);
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            IndexOptions {
+                skip_build_dirs: true,
+                ..journal_opts(&cache, &journal)
+            },
+            || {},
+        );
+        wait("journal caught up", || ready(&svc) && svc.status().live);
+        let cancel = AtomicBool::new(false);
+        let mut reports: Vec<crate::dirsize::Space> = Vec::new();
+        let space = svc
+            .usage_below(Path::new(r"C:\"), 4096, None, &cancel, &mut |s| {
+                reports.push(s.clone());
+            })
+            .expect("from the index");
+        let walk =
+            crate::dirsize::usage(&*fs, Path::new(r"C:\"), 4096, &cancel, &mut |_| {}).unwrap();
+        assert_eq!(space.usage, walk.usage, "same as walking everything");
+        let by_name = |s: &crate::dirsize::Space| {
+            let mut v: Vec<_> = s.children.iter().map(|(p, b)| (p.clone(), *b)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(by_name(&space), by_name(&walk));
+        assert!(
+            !reports.is_empty(),
+            "reported while walking the skipped folders"
+        );
+        assert!(reports.iter().all(|r| r.usage.bytes <= space.usage.bytes));
+        assert!(
+            reports.iter().all(|r| r.usage.bytes >= 66),
+            "the index part is in it"
+        );
+        assert!(
+            reports
+                .windows(2)
+                .all(|w| w[0].usage.bytes <= w[1].usage.bytes)
+        );
+
+        // Nothing skipped below: no report.
+        let mut quiet = 0;
+        let docs = svc
+            .usage_below(Path::new(r"C:\docs"), 0, None, &cancel, &mut |_| quiet += 1)
+            .expect("from the index");
+        assert_eq!((docs.usage.bytes, quiet), (50, 0));
+
+        // Cancelled during the walk: gives up.
+        let stop = AtomicBool::new(false);
+        let stopped = svc.usage_below(Path::new(r"C:\"), 0, None, &stop, &mut |_| {
+            stop.store(true, Ordering::Relaxed);
+        });
+        assert_eq!(stopped, None);
+        drop(svc);
     }
 
     /// Checkpoints are saved periodically while running. If the journal overwrites the build-time

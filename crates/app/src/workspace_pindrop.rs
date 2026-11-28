@@ -22,7 +22,7 @@ use rust_i18n::t;
 
 use super::{DraggedTab, Workspace};
 use crate::assets::Icon;
-use crate::explorer::DraggedFiles;
+use crate::explorer::{DraggedFiles, drop_external_into};
 use crate::settings::{PinSlot, SettingsStore};
 use crate::theme;
 
@@ -39,7 +39,20 @@ struct PinDrop {
     over_tiles: bool,
     /// The item the cursor is over and which side of it gets the insertion mark.
     mark: Option<Mark>,
+    /// Whether the paths dragged in from Explorer hold a folder, checked in the background.
+    external: Option<ExternalCheck>,
 }
+
+/// The background check of a drag from Explorer: whether any of `paths` is a folder. `folders` is
+/// `None` until the answer arrives. It belongs to the drag it was started for: [`clear`] drops it.
+struct ExternalCheck {
+    paths: Vec<PathBuf>,
+    folders: Option<bool>,
+}
+
+/// How many of the paths dragged in from Explorer the hover check looks at. A longer drag isn't
+/// checked and keeps showing the insertion marks.
+const CHECK_CAP: usize = 64;
 
 /// Where the insertion mark goes: item `ix` of `area`, at its start (`before`) or end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +156,12 @@ pub(crate) fn action_label() -> SharedString {
 /// otherwise whether only the item edges insert (`true`, folders that could also drop into it).
 pub(super) trait PinDrag: 'static {
     fn edges(&self, ws: &Workspace, cx: &App) -> Option<bool>;
+
+    /// The paths whose kinds [`Self::edges`] waits to learn, if any: checked in the background,
+    /// once per drag ([`Workspace::check_hover`]).
+    fn to_check(&self) -> Option<&[PathBuf]> {
+        None
+    }
 }
 
 impl PinDrag for DraggedTab {
@@ -166,10 +185,32 @@ impl PinDrag for super::sidebar::DraggedPin {
 }
 
 impl PinDrag for ExternalPaths {
-    fn edges(&self, _: &Workspace, _: &App) -> Option<bool> {
-        // Whether they are folders is only known after the drop, off the UI thread.
-        (!crate::win_virtual_drop::is_virtual(self.paths())).then_some(true)
+    fn edges(&self, _: &Workspace, cx: &App) -> Option<bool> {
+        if crate::win_virtual_drop::is_virtual(self.paths()) {
+            return None;
+        }
+        // Once checked, files are not added: the whole item takes them into its folder. Until
+        // then (and for a drag too long to check) they may be folders, which the edges insert.
+        let none_are_folders = cx
+            .try_global::<PinDrop>()
+            .and_then(|s| s.external.as_ref())
+            .is_some_and(|c| {
+                c.folders == Some(false) && self.paths().iter().take(CHECK_CAP).eq(c.paths.iter())
+            });
+        (!none_are_folders).then_some(true)
     }
+
+    fn to_check(&self) -> Option<&[PathBuf]> {
+        let paths = self.paths();
+        (paths.len() <= CHECK_CAP && !crate::win_virtual_drop::is_virtual(paths)).then_some(paths)
+    }
+}
+
+/// Whether any of `paths` is a folder (a drive root counts). Reads metadata: off the UI thread.
+fn any_folder(fs: &dyn arke_core::Fs, paths: &[PathBuf]) -> bool {
+    paths
+        .iter()
+        .any(|p| p.parent().is_none() || fs.stat(p).is_ok_and(|e| e.is_dir_like()))
 }
 
 impl Workspace {
@@ -181,6 +222,51 @@ impl Workspace {
             return None;
         }
         view.read(cx).display_path().map(Path::to_path_buf)
+    }
+
+    /// A drag moved over the favorites: starts the check of what it carries, unless it is under
+    /// way or done for this drag. The answer is kept in [`PinDrop`] until the drag ends.
+    fn check_hover<T: PinDrag>(&mut self, e: &DragMoveEvent<T>, cx: &mut Context<Self>) {
+        let paths = {
+            let cx: &App = cx;
+            let Some(paths) = e.drag(cx).to_check() else {
+                return;
+            };
+            let known = cx.try_global::<PinDrop>().and_then(|s| s.external.as_ref());
+            if known.is_some_and(|c| c.paths == paths) {
+                return;
+            }
+            paths.to_vec()
+        };
+        cx.default_global::<PinDrop>().external = Some(ExternalCheck {
+            paths: paths.clone(),
+            folders: None,
+        });
+        let fs = Arc::clone(&self.services.fs);
+        let (tx, rx) = flume::bounded::<bool>(1);
+        let checked = paths.clone();
+        crate::explorer::spawn_thread("pin-hover-check", move || {
+            let _ = tx.send(any_folder(&*fs, &checked));
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(folders) = rx.recv_async().await {
+                let _ = this.update(cx, |_, cx| {
+                    // Not the drag it was for any more: ended, or another one began.
+                    let state = cx.default_global::<PinDrop>();
+                    if let Some(check) = state.external.as_mut().filter(|c| c.paths == paths) {
+                        check.folders = Some(folders);
+                        // Nothing to add: the mark and slot shown so far go at once.
+                        if !folders {
+                            state.slot = None;
+                            state.mark = None;
+                            state.over_tiles = false;
+                        }
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     /// A drag moved over item `ix` of `area` (drawn at `bounds`): reports where it would go in.
@@ -195,6 +281,7 @@ impl Workspace {
         if !b.contains(&pos) {
             return;
         }
+        self.check_hover(e, cx);
         let slot = e.drag(cx).edges(self, cx).and_then(|edges| {
             let (start, len, at) = match area {
                 PinArea::Tiles => (b.left(), b.size.width, pos.x),
@@ -223,6 +310,7 @@ impl Workspace {
         if !e.bounds.contains(&e.event.position) {
             return;
         }
+        self.check_hover(e, cx);
         let slot = e.drag(cx).edges(self, cx).map(|_| slot);
         if report(slot, None, e.event.position, cx) {
             cx.notify();
@@ -232,7 +320,11 @@ impl Workspace {
     /// A drag moved over the tile grid or away from it: the grid shows the "Add to favorites" slot
     /// while something that can be added is over it.
     pub(super) fn tiles_hover<T: PinDrag>(&mut self, e: &DragMoveEvent<T>, cx: &mut Context<Self>) {
-        let over = e.bounds.contains(&e.event.position) && e.drag(cx).edges(self, cx).is_some();
+        let inside = e.bounds.contains(&e.event.position);
+        if inside {
+            self.check_hover(e, cx);
+        }
+        let over = inside && e.drag(cx).edges(self, cx).is_some();
         let state = cx.default_global::<PinDrop>();
         if state.over_tiles != over {
             state.over_tiles = over;
@@ -281,31 +373,48 @@ impl Workspace {
     }
 
     /// Paths from Explorer dropped on a pin area at the cursor: the folders among them are added
-    /// there once checked in the background.
+    /// there once checked in the background. If none is a folder and `into` (the folder of the
+    /// item the cursor is over) is given, they are dropped into it as on the middle of the item
+    /// ([`drop_external_into`]).
     pub(super) fn drop_external_to_pin(
         &mut self,
         paths: &ExternalPaths,
-        window: &Window,
+        into: Option<PathBuf>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(slot) = current(window, cx) else {
             return false;
         };
+        // Files extracted to the temp folder for this drop are gone once it returns (see
+        // `hold_temp_drop`): they go in now, not after the check.
+        let temp = std::env::temp_dir();
+        if into.is_some() && paths.paths().iter().any(|p| p.starts_with(&temp)) {
+            return false;
+        }
         clear(cx);
+        let dropped = paths.clone();
         let paths = paths.paths().to_vec();
         let fs = Arc::clone(&self.services.fs);
         let (tx, rx) = flume::bounded::<Vec<PathBuf>>(1);
         crate::explorer::spawn_thread("pin-check", move || {
             let folders = paths
                 .into_iter()
-                .filter(|p| p.parent().is_none() || fs.stat(p).is_ok_and(|e| e.is_dir_like()))
+                .filter(|p| any_folder(&*fs, std::slice::from_ref(p)))
                 .collect();
             let _ = tx.send(folders);
         });
-        cx.spawn(async move |this, cx| {
-            if let Ok(folders) = rx.recv_async().await {
-                let _ = this.update(cx, |this, cx| this.pin_paths(&folders, slot, cx));
-            }
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(folders) = rx.recv_async().await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| match into {
+                Some(dest) if folders.is_empty() => {
+                    let target = this.active_view().clone();
+                    drop_external_into(&dropped, dest, &target, window, cx);
+                }
+                _ => this.pin_paths(&folders, slot, cx),
+            });
         })
         .detach();
         true
@@ -469,7 +578,7 @@ impl PinDrops for gpui::Stateful<gpui::Div> {
             this.drop_files_to_pin(dragged, window, cx);
         }))
         .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-            this.drop_external_to_pin(paths, window, cx);
+            this.drop_external_to_pin(paths, None, window, cx);
         }))
         .on_drop(cx.listener(|this, _: &DraggedTab, window, cx| {
             this.drop_tab_to_pin_area(window, cx);

@@ -564,6 +564,51 @@ fn a_moderately_narrow_pane_keeps_the_buttons_and_the_path(cx: &mut TestAppConte
     );
 }
 
+/// Resizes the window and draws the way the platform does: a frame at the new size, then one
+/// for each next-frame request, and no other. [`settle`] refreshes on its own, which hid a row
+/// that asked for its second frame while drawing, where the request is dropped (#528).
+fn resize_like_the_platform(cx: &mut VisualTestContext, width: f32) {
+    cx.simulate_resize(size(px(width), px(650.)));
+    cx.run_until_parked();
+    for _ in 0..8 {
+        if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
+            break;
+        }
+        cx.run_until_parked();
+    }
+}
+
+/// What the pane row drew last: which of one item's buttons, "⋯", the pill, and whether the
+/// path bar collapsed levels into "…".
+fn row_state(cx: &mut VisualTestContext) -> ([bool; 5], bool, bool, bool) {
+    let drawn = ONE_ITEM_BUTTONS.map(|id| cx.debug_bounds(id).is_some());
+    let more = cx.debug_bounds("sel-more").is_some();
+    let pill = cx.debug_bounds("sel-count").is_some();
+    let elided = cx.debug_bounds("crumb-more").is_some();
+    (drawn, more, pill, elided)
+}
+
+/// #528: as the window narrows step by step, each step's row is laid out for its own width at
+/// once, not the width before: the path bar keeps every level while any selection button is
+/// drawn, and drawing more frames changes nothing. Before, the path bar and the selection were
+/// laid out a resize step behind, eliding the path next to buttons.
+#[gpui::test]
+fn the_pane_row_keeps_up_with_a_resize(cx: &mut TestAppContext) {
+    let (_ws, view, cx) = open_deep(cx, 1600.);
+    select_one(cx, &view);
+    for width in (600..=1600_u16).rev().step_by(25) {
+        resize_like_the_platform(cx, f32::from(width));
+        let now = row_state(cx);
+        let (drawn, _, _, elided) = now;
+        assert!(
+            !elided || !drawn.contains(&true),
+            "{width} px: buttons {drawn:?} next to a collapsed path bar"
+        );
+        settle(cx);
+        assert_eq!(row_state(cx), now, "{width} px: settled on the first frames");
+    }
+}
+
 /// #388, #528: the selection's buttons moved into "⋯" are still in reach from the keyboard: F6 to
 /// the pane row, the arrows to "⋯", Enter opens the menu with Cut, Copy, Rename and Delete.
 #[gpui::test]

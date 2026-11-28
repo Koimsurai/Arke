@@ -787,10 +787,12 @@ impl Explorer {
         let slot = Rc::clone(&self.path_slot);
         // The breadcrumbs collapse based on this width: when it changes, draw once more with the
         // new value (the slot's width doesn't depend on its content, so this settles at once).
+        // On the next frame: a refresh while drawing is dropped, which left the row a resize
+        // step behind (#528).
         let capture = canvas(
             move |b, window, _| {
                 if slot.replace(b.size.width) != b.size.width {
-                    window.refresh();
+                    window.on_next_frame(|window, _| window.refresh());
                 }
             },
             |_, (), _, _| {},
@@ -1259,6 +1261,7 @@ fn more_piece(i: usize, hidden: Vec<(String, PathBuf)>, cx: &mut Context<Explore
     let me = cx.entity().downgrade();
     div()
         .id(("crumb-more", i))
+        .debug_selector(|| "crumb-more".to_owned())
         .a11y_button(t!("a11y.more_folders"))
         .relative()
         .flex_none()

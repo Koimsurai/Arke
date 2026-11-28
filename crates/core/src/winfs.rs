@@ -10,7 +10,9 @@
 //!   [`Change`]s ask for `ReadDirectoryChangesExW`'s extended records, which carry each item's
 //!   size, times and attributes, so nothing has to be stat'ed; where the file system doesn't have
 //!   them (Windows 10 before 1709, FAT, most file servers) the call fails and that watch reads
-//!   plain records instead.
+//!   plain records instead. A file server that takes the request and then answers in another
+//!   layout or refuses it (a NAS, #536) gets one relist, and plain records from then on, in that
+//!   watch and every later one on the volume.
 //! - [`scan_sizes`]: one directory read for the folder size walk, with `FindFirstFileExW` (basic
 //!   info, large fetch) and no allocation per file.
 //! - [`read_dir`]: folder listings, the same entries as std's but fetched in large batches (one
@@ -130,24 +132,73 @@ enum Records {
 }
 
 impl Records {
-    /// What a new watch asks for first.
-    const fn first(sink: &Sink) -> Self {
-        match sink {
-            Sink::Paths(_) => Self::Plain,
-            Sink::Changes(_) => Self::Extended { confirmed: false },
+    /// What a new watch of `root` asks for first: plain records where extended ones turned out
+    /// unusable on its volume before ([`plain_only`]).
+    fn first(sink: &Sink, root: &Path) -> Self {
+        if matches!(sink, Sink::Paths(_)) {
+            return Self::Plain;
+        }
+        let volume = volume_of(root);
+        if plain_only().lock().contains(&volume) {
+            Self::Plain
+        } else {
+            Self::Extended { confirmed: false }
         }
     }
 
     /// Whether a read that failed with Win32 error `code` means this watch's file system (or this
-    /// Windows) has no extended records, so it should read plain ones instead. Only before the
-    /// first extended read came back: after that, a failure is about the folder, as with plain
-    /// records.
+    /// Windows) has no extended records, so it should read plain ones instead. Also after extended
+    /// reads came back: a file server that took them at first and then refuses them (#536) would
+    /// otherwise stop the watch. A folder that is really gone fails the plain reads too.
     fn falls_back(self, code: u32) -> bool {
         /// `ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`, `ERROR_INVALID_PARAMETER`,
         /// `ERROR_CALL_NOT_IMPLEMENTED`, `ERROR_INVALID_LEVEL`.
         const UNSUPPORTED: [u32; 5] = [1, 50, 87, 120, 124];
-        self == Self::Extended { confirmed: false } && UNSUPPORTED.contains(&code)
+        matches!(self, Self::Extended { .. }) && UNSUPPORTED.contains(&code)
     }
+}
+
+/// Volumes (as [`volume_of`] gives them) whose extended records turned out unusable after the
+/// file system took the request (#536): their later watches read plain records from the start.
+/// Every relist opens a new watch, so without this each one would find out again, with a relist.
+fn plain_only() -> &'static Mutex<std::collections::HashSet<String>> {
+    static VOLUMES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    VOLUMES.get_or_init(Default::default)
+}
+
+/// What a read that brought `raw` says, for a watch reading `records`, and what the watch reads
+/// next. Extended records that don't read as such mean the file system took the request but
+/// answers in another layout (a NAS, #536): what changed is unknown, so the folder is relisted
+/// once, and plain records are read from then on (instead of a relist after every change).
+fn read_records(records: Records, raw: &[u8], root: &Path) -> (Read, Records) {
+    match records {
+        Records::Plain => (Read::Paths(changed_paths(raw, root)), Records::Plain),
+        Records::Extended { .. } => match extended_records(raw) {
+            Some(records) => (
+                Read::Changes(changes_of(records, root)),
+                Records::Extended { confirmed: true },
+            ),
+            None => (Read::Rescan, Records::Plain),
+        },
+    }
+}
+
+/// Opens `path` for watching.
+fn open_dir(path: &Path) -> io::Result<Handle> {
+    let name = wide(path);
+    // SAFETY: `name` is NUL-terminated and outlives the call.
+    let dir = unsafe {
+        CreateFileW(
+            PCWSTR(name.as_ptr()),
+            FILE_LIST_DIRECTORY.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+            None,
+        )
+    }?;
+    Ok(Handle(dir))
 }
 
 /// `ReadDirectoryChangesExW`, looked up at run time: kernel32 has it from Windows 10 1709 on, and
@@ -192,20 +243,7 @@ impl DirWatcher {
     /// made after this returns are seen. Can block on network paths; background threads only.
     pub(crate) fn start(path: &Path, recursive: bool, sink: Sink) -> io::Result<Self> {
         static NEXT_KEY: AtomicUsize = AtomicUsize::new(COMMAND_KEY + 1);
-        let name = wide(path);
-        // SAFETY: `name` is NUL-terminated and outlives the call.
-        let dir = unsafe {
-            CreateFileW(
-                PCWSTR(name.as_ptr()),
-                FILE_LIST_DIRECTORY.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-                None,
-            )
-        }?;
-        let dir = Handle(dir);
+        let dir = open_dir(path)?;
         let port = Port::get(is_network(path))?;
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
         // SAFETY: both handles are alive; reads on `dir` now complete to the port under `key`.
@@ -213,7 +251,8 @@ impl DirWatcher {
         let (done_tx, done) = flume::bounded(1);
         let (ready_tx, ready) = flume::bounded(1);
         let slot = Slot {
-            records: Records::first(&sink),
+            records: Records::first(&sink, path),
+            key,
             dir,
             root: path.to_path_buf(),
             recursive,
@@ -328,7 +367,7 @@ fn run_port(port: &Handle, commands: &flume::Receiver<Command>) {
             )
         };
         if !overlapped.is_null() {
-            watches.completed(key);
+            watches.completed(key, port);
         } else if key == COMMAND_KEY && waited.is_ok() {
             while let Ok(command) = commands.try_recv() {
                 watches.command(command);
@@ -375,12 +414,12 @@ impl Watches {
         }
     }
 
-    fn completed(&mut self, key: usize) {
+    fn completed(&mut self, key: usize, port: &Handle) {
         let Some(slot) = self.0.get_mut(&key) else {
             return;
         };
         slot.pending = false;
-        if (slot.stopping || !slot.completed())
+        if (slot.stopping || !slot.completed(port))
             && let Some(slot) = self.0.remove(&key)
         {
             slot.finish();
@@ -412,6 +451,8 @@ enum Read {
 /// One watch, as its port's thread sees it.
 struct Slot {
     dir: Handle,
+    /// Completion key of the watch's reads on its port.
+    key: usize,
     root: PathBuf,
     recursive: bool,
     sink: Sink,
@@ -515,7 +556,7 @@ impl Slot {
     /// The pending read came back: hands on what it brought and issues the next one. Returns
     /// whether watching goes on (not once the folder is gone, the drive removed, or the read
     /// cancelled).
-    fn completed(&mut self) -> bool {
+    fn completed(&mut self, port: &Handle) -> bool {
         let mut bytes = 0u32;
         // SAFETY: the read completed (it was dequeued from the port), so this only reads its
         // status from `overlapped`.
@@ -527,19 +568,18 @@ impl Slot {
                 false,
             )
         };
+        let before = self.records;
+        let mut refused = None;
         let read = match result {
             // The buffer overflowed: the changes are lost, the folder has to be listed again.
             Ok(()) if bytes == 0 => Read::Rescan,
             Ok(()) => self.parse(bytes as usize),
             Err(err) if err.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult() => Read::Rescan,
             Err(err) if err.code() == ERROR_OPERATION_ABORTED.to_hresult() => return false,
-            // Extended records refused only now: changes since the watch started may be lost.
+            // Extended records refused only now: changes since the last read may be lost.
             Err(err) if self.records.falls_back(win32_code(&err)) => {
-                log::debug!(
-                    "no extended change records for {} ({err}), reading plain ones",
-                    self.root.display()
-                );
                 self.records = Records::Plain;
+                refused = Some(err);
                 Read::Rescan
             }
             Err(err) => {
@@ -547,6 +587,14 @@ impl Slot {
                 return false;
             }
         };
+        if let Records::Extended { confirmed } = before
+            && self.records == Records::Plain
+            && let Err(err) = self.switch_to_plain(port, confirmed, refused.as_ref())
+        {
+            self.deliver(read);
+            log::debug!("stopped watching {}: {err}", self.root.display());
+            return false;
+        }
         // The records are copied out, so the buffer can take the next ones while they're handled.
         let issued = self.issue();
         self.deliver(read);
@@ -557,28 +605,48 @@ impl Slot {
         true
     }
 
-    /// The first `len` bytes of the buffer, as records of the kind asked for.
+    /// Extended records turned out unusable here after a read with them was taken (`confirmed`
+    /// if one came back readable; `refused` the error if the file system refused them now rather
+    /// than answering in another layout): plain records from now on, on a new handle (the kernel
+    /// may keep queuing the old one's changes in the extended layout, and plain records are read
+    /// without such checks), and for the later watches of this volume. Logged, once per watch,
+    /// so a reporter's log shows it.
+    fn switch_to_plain(
+        &mut self,
+        port: &Handle,
+        confirmed: bool,
+        refused: Option<&windows::core::Error>,
+    ) -> io::Result<()> {
+        let why = refused.map_or_else(|| "unreadable records".to_owned(), ToString::to_string);
+        let after = if confirmed {
+            " after readable ones"
+        } else {
+            ""
+        };
+        log::info!(
+            "extended change records unusable for {} ({why}{after}): plain ones from now on",
+            self.root.display()
+        );
+        let volume = volume_of(&self.root);
+        plain_only().lock().insert(volume);
+        let dir = open_dir(&self.root)?;
+        // SAFETY: both handles are alive; reads on `dir` complete to the port under this watch's
+        // key, as those on the old handle did.
+        unsafe { CreateIoCompletionPort(dir.0, Some(port.0), self.key, 0) }?;
+        // No read is pending on the old handle (this one just came back): closing it is safe.
+        self.dir = dir;
+        Ok(())
+    }
+
+    /// The first `len` bytes of the buffer, as records of the kind asked for ([`read_records`]).
     fn parse(&mut self, len: usize) -> Read {
         // SAFETY: u32 to u8 view of the same initialized memory.
         let raw: &[u8] =
             unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast(), self.buf.len() * 4) };
         let raw = &raw[..len.min(raw.len())];
-        match self.records {
-            Records::Plain => Read::Paths(changed_paths(raw, &self.root)),
-            Records::Extended { .. } => {
-                // The file system took the request, so a later failure is about the folder.
-                self.records = Records::Extended { confirmed: true };
-                if let Some(records) = extended_records(raw) {
-                    Read::Changes(changes_of(records, &self.root))
-                } else {
-                    // Not what was asked for: what changed is unknown, so relist. Plain records
-                    // aren't asked for instead: the kernel may keep queuing this handle's changes
-                    // in the extended layout, and plain ones are read without such checks.
-                    log::debug!("unreadable change records for {}", self.root.display());
-                    Read::Rescan
-                }
-            }
-        }
+        let (read, records) = read_records(self.records, raw, &self.root);
+        self.records = records;
+        read
     }
 
     /// Calls the watch's handler. A panic in it is logged, so it can't end every other watch.
@@ -1387,20 +1455,22 @@ mod tests {
     }
 
     /// Watches that want described changes ask for extended records first, and read plain ones
-    /// when that fails as unsupported before any extended read came back; nothing else falls back.
+    /// when that fails as unsupported, also after extended reads came back (#536); nothing else
+    /// falls back.
     #[test]
     fn extended_records_fall_back_only_when_unsupported() {
         let paths = Sink::Paths(Arc::new(Box::new(|_| {}) as WatchCallback));
         let changes = Sink::Changes(Arc::new(Box::new(|_| {}) as ChangeCallback));
-        assert_eq!(Records::first(&paths), Records::Plain);
-        let fresh = Records::first(&changes);
+        let root = Path::new(r"C:\w");
+        assert_eq!(Records::first(&paths, root), Records::Plain);
+        let fresh = Records::first(&changes, root);
         assert_eq!(fresh, Records::Extended { confirmed: false });
         let confirmed = Records::Extended { confirmed: true };
         // Invalid function (FAT, old Windows), not supported, invalid parameter or level.
         for code in [1, 50, 87, 120, 124] {
             assert!(fresh.falls_back(code), "{code}");
             assert!(
-                !confirmed.falls_back(code),
+                confirmed.falls_back(code),
                 "{code} after extended reads worked"
             );
             assert!(
@@ -1411,9 +1481,61 @@ mod tests {
         // Access denied, folder gone, network errors: a real failure, as with plain records.
         for code in [5, 2, 3, 53, 64, 1117] {
             assert!(!fresh.falls_back(code), "{code}");
+            assert!(!confirmed.falls_back(code), "{code}");
         }
         let missing = windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(1));
         assert!(fresh.falls_back(win32_code(&missing)));
+    }
+
+    /// A file server that takes the request for extended records and answers in another layout
+    /// (#536): the watch relists once and reads plain records from then on (not a relist after
+    /// every change), the same when it took readable ones before, and later watches of the
+    /// volume start with plain records.
+    #[test]
+    fn unreadable_extended_records_switch_the_watch_to_plain_ones() {
+        let root = Path::new(r"\\nas-536\share\docs");
+        let mut plain = Vec::new();
+        plain.extend(0u32.to_le_bytes());
+        plain.extend(3u32.to_le_bytes());
+        plain.extend(10u32.to_le_bytes());
+        plain.extend("a.txt".encode_utf16().flat_map(u16::to_le_bytes));
+
+        let (read, records) = read_records(Records::Extended { confirmed: false }, &plain, root);
+        assert!(matches!(read, Read::Rescan));
+        assert_eq!(records, Records::Plain);
+        let (read, records) = read_records(records, &plain, root);
+        assert!(
+            matches!(&read, Read::Paths(p) if p == &[root.join("a.txt")]),
+            "read as paths"
+        );
+        assert_eq!(records, Records::Plain);
+        let (read, _) = read_records(records, &plain, root);
+        assert!(matches!(read, Read::Paths(_)), "no second relist");
+
+        // Readable at first, then not.
+        let good = record(1, "b.txt", 1, 0x20, 0, true);
+        let (read, records) = read_records(Records::Extended { confirmed: false }, &good, root);
+        assert!(matches!(&read, Read::Changes(c) if c.len() == 1));
+        assert_eq!(records, Records::Extended { confirmed: true });
+        let (read, records) = read_records(records, &plain, root);
+        assert!(matches!(read, Read::Rescan));
+        assert_eq!(records, Records::Plain);
+
+        // What the switch remembers: later watches of the volume, and only of it, read plain.
+        let changes = Sink::Changes(Arc::new(Box::new(|_| {}) as ChangeCallback));
+        let other = Path::new(r"\\nas-536\other");
+        assert_eq!(
+            Records::first(&changes, other),
+            Records::Extended { confirmed: false }
+        );
+        plain_only().lock().insert(volume_of(root));
+        let later = Path::new(r"\\NAS-536\Share\docs\sub");
+        assert_eq!(Records::first(&changes, later), Records::Plain);
+        assert_eq!(
+            Records::first(&changes, other),
+            Records::Extended { confirmed: false }
+        );
+        plain_only().lock().remove(&volume_of(root));
     }
 
     /// The temp folder (NTFS, so extended records): every change arrives, what the records

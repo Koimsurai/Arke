@@ -449,6 +449,8 @@ framework of the Zed editor, and on the open-source crates listed in
 [Everything](https://www.voidtools.com/), the look owes a lot to the
 [Files](https://files.community/) app, and the tab sidebar is a nod to the Arc browser.
 
+Thanks to the [LINUX DO](https://linux.do) community.
+
 The name comes from Greek myth: Arke is the twin sister of Iris, both winged messengers.
 
 ## Code signing policy

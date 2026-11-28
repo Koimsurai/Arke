@@ -381,6 +381,8 @@ Arke 基于 Zed 编辑器的界面框架 [GPUI](https://github.com/zed-industrie
 [Everything](https://www.voidtools.com/)，外观深受 [Files](https://files.community/) 影响，
 侧边栏标签页则致敬了 Arc 浏览器。
 
+感谢 [LINUX DO](https://linux.do) 社区。
+
 名字来自希腊神话：Arke 是 Iris 的双胞胎姐妹，两人都是长着翅膀的信使。
 
 ## 代码签名政策

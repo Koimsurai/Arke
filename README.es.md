@@ -451,6 +451,8 @@ de interfaz del editor Zed, y sobre los crates de código abierto enumerados en
 [Everything](https://www.voidtools.com/), el aspecto debe mucho a la aplicación
 [Files](https://files.community/), y la barra lateral de pestañas es un guiño al navegador Arc.
 
+Gracias a la comunidad de [LINUX DO](https://linux.do).
+
 El nombre viene de la mitología griega: Arke es la hermana gemela de Iris, ambas mensajeras con alas.
 
 ## Política de firma de código

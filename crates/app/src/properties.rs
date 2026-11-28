@@ -479,9 +479,15 @@ impl Properties {
             _subscriptions: subscriptions,
         };
         cx.spawn(async move |this, cx| {
-            while let Ok(msg) = rx.recv_async().await {
-                if this.update(cx, |this, cx| this.handle(msg, cx)).is_err() {
-                    break;
+            while let Ok(first) = rx.recv_async().await {
+                // Whatever piled up while the window was busy (or the machine was) is handled
+                // as one: a count's snapshot makes the ones before it worthless.
+                let mut batch = vec![first];
+                batch.extend(rx.try_iter());
+                for msg in coalesce(batch) {
+                    if this.update(cx, |this, cx| this.handle(msg, cx)).is_err() {
+                        return;
+                    }
                 }
             }
         })
@@ -567,12 +573,15 @@ impl Properties {
         let targets = self.targets.clone();
         let tx = self.tx.clone();
         let cancel = Arc::clone(&self.cancel);
-        spawn_thread("properties-load", move || {
-            let loaded = read_items(&services, &targets);
-            let cluster = loaded.cluster;
-            let rows: Vec<Row> = loaded.rows.clone();
-            let details = loaded.details;
-            let _ = tx.send(Msg::Loaded(Box::new(loaded)));
+        // The count needs the rows, the details and the cluster size, nothing else: it starts the
+        // moment `read_items` has them, on its own thread, not after the picture, the program and
+        // the places (shell calls that can take seconds on a slow drive or a busy virus scanner).
+        let (ready_tx, ready_rx) = flume::bounded::<(Vec<Row>, FileDetails, u64)>(1);
+        let (count_services, count_tx) = (services.clone(), tx.clone());
+        spawn_thread("properties-count", move || {
+            let Ok((rows, details, cluster)) = ready_rx.recv() else {
+                return;
+            };
             let table = table_reader();
             let profiles = service_profiles();
             // Shared by the folders of this window: what one teaches is used for the next.
@@ -584,7 +593,21 @@ impl Properties {
                 profiles: profiles.as_ref(),
                 seeks: crate::win_eject::seeks,
             };
-            count_space(&services, &fast, &rows, details, cluster, &cancel, &tx);
+            count_space(
+                &count_services,
+                &fast,
+                &rows,
+                details,
+                cluster,
+                &cancel,
+                &count_tx,
+            );
+        });
+        spawn_thread("properties-load", move || {
+            let loaded = read_items(&services, &targets, &mut |rows, details, cluster| {
+                let _ = ready_tx.send((rows.to_vec(), details, cluster));
+            });
+            let _ = tx.send(Msg::Loaded(Box::new(loaded)));
         });
     }
 
@@ -1514,7 +1537,14 @@ fn hash_reader<R: std::io::Read + Send>(
 }
 
 /// Reads what the window shows about `targets`. Background thread.
-fn read_items(services: &Services, targets: &[(PathBuf, bool)]) -> Loaded {
+///
+/// `ready` is called with what counting needs (the rows, their details and the drive's cluster
+/// size) as soon as that is read, before the slower shell calls (picture, program, places).
+fn read_items(
+    services: &Services,
+    targets: &[(PathBuf, bool)],
+    ready: &mut dyn FnMut(&[Row], FileDetails, u64),
+) -> Loaded {
     let shell = &services.shell;
     let root = targets.first().and_then(|(p, _)| root_of(p));
     let volume = root.as_deref().and_then(|r| shell.volume_info(r));
@@ -1544,6 +1574,7 @@ fn read_items(services: &Services, targets: &[(PathBuf, bool)]) -> Loaded {
     let details = single
         .filter(|r| !is_drive_root(&r.path))
         .map_or_default(|r| shell.file_details(&r.path));
+    ready(&rows, details, cluster);
     let target = single
         .filter(|r| r.entry.extension().eq_ignore_ascii_case("lnk"))
         .and_then(|r| shell.shortcut_target(&r.path))
@@ -1735,6 +1766,8 @@ fn drive_root(path: &Path) -> Option<PathBuf> {
 ///
 /// On a spinning disk the table counts alone, from the start: a walk there seeks for every folder,
 /// and the two at once would slow each other down. Only what the table can't count is walked.
+///
+/// Logs which way the count was made and how long it took (info), so a report says it.
 fn count_folder(
     fs: &dyn arke_core::fs::Fs,
     fast: &Fast,
@@ -1744,17 +1777,47 @@ fn count_folder(
     tx: &flume::Sender<Msg>,
     progress: &mut dyn FnMut(&Space),
 ) -> Option<Space> {
+    let began = Instant::now();
+    let (space, how) = count_folder_by(fs, fast, dir, cluster, cancel, tx, progress);
+    let ms = began.elapsed().as_millis();
+    match &space {
+        Some(space) => log::info!(
+            "properties: counted {} from the {how} in {ms} ms: {} files, {} folders, {} bytes{}",
+            dir.display(),
+            space.usage.files,
+            space.usage.folders,
+            space.usage.bytes,
+            if space.usage.partial { ", partial" } else { "" }
+        ),
+        None => log::info!(
+            "properties: counting {} stopped after {ms} ms (the {how} was at it)",
+            dir.display()
+        ),
+    }
+    space
+}
+
+/// [`count_folder`], and which way it was counted (`"index"`, `"file table"`, `"walk"`, ...).
+fn count_folder_by(
+    fs: &dyn arke_core::fs::Fs,
+    fast: &Fast,
+    dir: &Path,
+    cluster: u64,
+    cancel: &AtomicBool,
+    tx: &flume::Sender<Msg>,
+    progress: &mut dyn FnMut(&Space),
+) -> (Option<Space>, &'static str) {
     use crate::settings::TableTime;
     let (times, profiles) = (fast.table_times, fast.profiles);
     if let Some(space) = fast
         .index
         .and_then(|ix| ix.usage_below(dir, cluster, profiles, cancel))
     {
-        return Some(space);
+        return (Some(space), "search index");
     }
     let table = fast.table.zip(drive_root(dir));
     let Some((table, root)) = table else {
-        return dirsize::usage(fs, dir, cluster, cancel, progress);
+        return (dirsize::usage(fs, dir, cluster, cancel, progress), "walk");
     };
     let key = root.to_string_lossy().into_owned();
     // `since`: when the count began. A read stopped early took less than the table takes, and the
@@ -1789,10 +1852,15 @@ fn count_folder(
     // sweep over the drive, a walk seeks for every folder, and the two at once slow each other
     // down. The table alone, a walk only when it can't count it.
     if dir == root || ((fast.seeks)(&root) && table_can_count(fs, &root, dir, profiles)) {
-        return table_else_walk(
+        let how = Cell::new("file table");
+        let space = table_else_walk(
             || read_table(cancel, Instant::now()),
-            || dirsize::usage(fs, dir, cluster, cancel, progress),
+            || {
+                how.set("walk, the file table could not count it");
+                dirsize::usage(fs, dir, cluster, cancel, progress)
+            },
         );
+        return (space, how.get());
     }
     let known = times.lock().get(&key).copied();
     let overtake = known.map(|t| std::time::Duration::from_millis(t.ms));
@@ -1838,10 +1906,54 @@ fn count_folder(
             log::warn!("properties: the file table read panicked");
         }
         if cancel.load(Ordering::Relaxed) {
-            return None;
+            return (None, "walk");
         }
-        walked.or(from_table)
+        match walked {
+            Some(space) => (Some(space), "walk"),
+            None => (from_table, "file table, started after the walk had"),
+        }
     })
+}
+
+/// Lets a report through at most once per `every`: a count reports far more often than the window
+/// needs to draw, and every report is a copy of everything counted so far.
+struct Throttle {
+    every: Duration,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    const fn new(every: Duration) -> Self {
+        Self { every, last: None }
+    }
+
+    /// Whether a report at `now` goes through (the first one always does).
+    fn ready(&mut self, now: Instant) -> bool {
+        let due = self
+            .last
+            .is_none_or(|at| now.saturating_duration_since(at) >= self.every);
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+}
+
+/// What a window handles of a batch of messages: of several counts (or checksum percents) only
+/// the last one, which holds all the earlier ones had. Everything else stays, in order.
+fn coalesce(batch: Vec<Msg>) -> Vec<Msg> {
+    let last_space = batch.iter().rposition(|m| matches!(m, Msg::Space(..)));
+    let last_hash = batch.iter().rposition(|m| matches!(m, Msg::Hash(_)));
+    batch
+        .into_iter()
+        .enumerate()
+        .filter(|(i, msg)| match msg {
+            Msg::Space(..) => Some(*i) == last_space,
+            Msg::Hash(_) => Some(*i) == last_hash,
+            _ => true,
+        })
+        .map(|(_, msg)| msg)
+        .collect()
 }
 
 /// Counts the files and folders under the items and reports as it goes. Background thread.
@@ -1868,7 +1980,7 @@ fn count_space(
         usage: base,
         children: Vec::new(),
     };
-    let mut last_sent: Option<Instant> = None;
+    let mut throttle = Throttle::new(PROGRESS_EVERY);
     for row in rows.iter().filter(|r| r.entry.is_dir_like()) {
         let before = done.clone();
         let walked = count_folder(
@@ -1879,8 +1991,7 @@ fn count_space(
             cancel,
             tx,
             &mut |so_far| {
-                if last_sent.is_none_or(|at| at.elapsed() >= PROGRESS_EVERY) {
-                    last_sent = Some(Instant::now());
+                if throttle.ready(Instant::now()) {
                     let mut shown = before.clone();
                     shown.usage += so_far.usage;
                     if single {
@@ -3425,6 +3536,75 @@ mod count_folder_tests {
             assert_eq!(bytes, 1_000_000 + 100, "from the table");
             assert_eq!(fs.read_dir_calls(), 0, "nothing walked");
         }
+    }
+
+    fn space_of(bytes: u64) -> Space {
+        Space {
+            usage: Usage {
+                bytes,
+                ..Usage::default()
+            },
+            children: Vec::new(),
+        }
+    }
+
+    /// A drive whose table fails is walked, from the first moment (not after a time-out).
+    #[test]
+    fn a_drive_whose_table_fails_is_walked() {
+        let (fs, _) = setup();
+        let started = Instant::now();
+        let (bytes, learned) = count(&fs, &Crashing, &BTreeMap::new(), ssd, r"C:\");
+        assert_eq!(bytes, 107, "C:\\w and C:\\x, as the disk has them");
+        assert!(learned.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// Reports go through a few times a second, however often the count makes them.
+    #[test]
+    fn progress_is_let_through_a_few_times_a_second() {
+        let t0 = Instant::now();
+        let mut throttle = Throttle::new(Duration::from_millis(100));
+        assert!(throttle.ready(t0), "the first one");
+        assert!(!throttle.ready(t0 + Duration::from_millis(50)));
+        assert!(!throttle.ready(t0 + Duration::from_millis(99)));
+        assert!(throttle.ready(t0 + Duration::from_millis(100)));
+        assert!(
+            !throttle.ready(t0 + Duration::from_millis(150)),
+            "from the last one let through"
+        );
+        let sent = (0..1000)
+            .filter(|i| throttle.ready(t0 + Duration::from_millis(1000 + i)))
+            .count();
+        assert_eq!(sent, 10, "a thousand reports in a second");
+        assert!(
+            PROGRESS_EVERY >= Duration::from_millis(100),
+            "ten a second at most"
+        );
+    }
+
+    /// Of a pile of messages only the last count and the last checksum percent are handled; the
+    /// rest stay, in order.
+    #[test]
+    fn a_pile_of_progress_is_handled_as_one() {
+        let counted = |bytes, counting| Msg::Space(space_of(bytes), counting);
+        let kept = coalesce(vec![
+            counted(1, Counting::Running),
+            Msg::TableTime(r"C:\".to_owned(), TableTime { ms: 5, done: true }),
+            counted(2, Counting::Running),
+            Msg::Hash(HashState::Running(10)),
+            counted(3, Counting::Done),
+            Msg::Hash(HashState::Done("ab".to_owned())),
+            Msg::Action(Ok(())),
+        ]);
+        assert_eq!(kept.len(), 4);
+        assert!(matches!(kept[0], Msg::TableTime(..)));
+        assert!(
+            matches!(&kept[1], Msg::Space(s, Counting::Done) if s.usage.bytes == 3),
+            "the last count"
+        );
+        assert!(matches!(&kept[2], Msg::Hash(HashState::Done(_))));
+        assert!(matches!(kept[3], Msg::Action(_)));
+        assert!(coalesce(Vec::new()).is_empty());
     }
 
     /// A read to the end replaces what was known; a stopped one only raises a lower bound.

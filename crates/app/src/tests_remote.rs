@@ -468,3 +468,29 @@ fn copying_from_a_phone_downloads_nothing_and_pasting_downloads_with_progress() 
     let (files, _) = shell.clipboard_files().unwrap().unwrap();
     assert_eq!(files.paths, [other]);
 }
+
+/// A program moved cut remote items out of a folder (#529): every pane showing that folder
+/// relists, the way panes do after Arke's own operations on a server (which sends no change
+/// notifications). The folder is a fake local one here; the relist only compares paths.
+#[gpui::test]
+fn a_folder_changed_outside_arke_is_relisted_where_it_shows(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![dir("moved"), file("a.txt", 1)]);
+    let (ws, cx) = setup_workspace(cx, Arc::clone(&fs), r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    assert!(view.update(cx, |v, _| names(v)).contains(&"moved".to_owned()));
+
+    // Gone without a change notification, as on a server.
+    fs.remove(Path::new(r"C:\o"), "moved");
+    cx.cx
+        .update(|cx| crate::workspace::reload_remote_everywhere(Path::new(r"C:\elsewhere"), cx));
+    cx.run_until_parked();
+    assert!(
+        view.update(cx, |v, _| names(v)).contains(&"moved".to_owned()),
+        "a pane showing another folder is left alone"
+    );
+    cx.cx
+        .update(|cx| crate::workspace::reload_remote_everywhere(Path::new(r"C:\o"), cx));
+    wait_until(cx, &view, "relisted", |v| !names(v).contains(&"moved".to_owned()));
+}

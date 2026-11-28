@@ -197,6 +197,8 @@ impl VirtualItem {
 #[derive(Debug)]
 pub(crate) struct Top {
     pub(crate) url: RemoteUrl,
+    /// The item as it was given (the path the panes show it under).
+    pub(crate) path: PathBuf,
     pub(crate) range: std::ops::Range<usize>,
     /// Nothing under it was left out (a folder link, a name too long).
     pub(crate) whole: bool,
@@ -252,15 +254,15 @@ impl Listing {
     }
 
     /// The items given that are read in full (as [`Self::fully_read`]) and not handed over for
-    /// deletion yet; each is handed over once.
-    pub(crate) fn take_fully_read(&self) -> Vec<RemoteUrl> {
+    /// deletion yet, with their paths; each is handed over once.
+    pub(crate) fn take_fully_read(&self) -> Vec<(RemoteUrl, PathBuf)> {
         self.tops
             .iter()
             .zip(&self.taken)
             .filter(|(top, _)| top.whole && !top.range.is_empty())
             .filter(|(top, _)| top.range.clone().all(|i| self.was_read(i)))
             .filter(|(_, taken)| !taken.swap(true, Ordering::Relaxed))
-            .map(|(top, _)| top.url.clone())
+            .map(|(top, _)| (top.url.clone(), top.path.clone()))
             .collect()
     }
 }
@@ -283,7 +285,12 @@ pub(crate) fn list_virtual(remotes: &Remotes, sources: &[PathBuf]) -> Result<Lis
         let start = listing.items.len();
         let whole = list_tree(remotes, &url, &entry, name, &mut listing.items)?;
         let range = start..listing.items.len();
-        listing.tops.push(Top { url, range, whole });
+        listing.tops.push(Top {
+            url,
+            path: source.clone(),
+            range,
+            whole,
+        });
     }
     listing.read = listing
         .items
@@ -618,7 +625,28 @@ pub(crate) fn start(
     crate::explorer::spawn_thread("remote-cache-prune", move || {
         prune_cache(&cache, SystemTime::now());
     });
+    let (changed, folders) = flume::unbounded::<PathBuf>();
+    if CHANGED.set(changed).is_ok() {
+        cx.spawn(async move |cx| {
+            while let Ok(folder) = folders.recv_async().await {
+                cx.update(|cx| crate::workspace::reload_remote_everywhere(&folder, cx));
+            }
+        })
+        .detach();
+    }
     remotes
+}
+
+/// Where [`changed_elsewhere`] sends folders, for the UI ([`start`]).
+static CHANGED: std::sync::OnceLock<flume::Sender<PathBuf>> = std::sync::OnceLock::new();
+
+/// A remote folder changed outside Arke's own operations: a program moved cut items out of it
+/// (#529). Servers send no change notifications, so the panes showing it relist, as after an
+/// operation of Arke's. Any thread.
+pub(crate) fn changed_elsewhere(folder: PathBuf) {
+    if let Some(changed) = CHANGED.get() {
+        let _ = changed.send(folder);
+    }
 }
 
 /// Whether the user allowed sending the password over plain http to the server of `path`.

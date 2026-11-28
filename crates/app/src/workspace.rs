@@ -79,7 +79,9 @@ mod welcome;
 pub(crate) mod whats_new_page;
 use settings_panel::CloseSettings;
 pub(crate) use settings_panel::{OpenSettings, flyout_switch};
-pub(crate) use sidebar::{leave_drive_everywhere, reload_places_everywhere};
+pub(crate) use sidebar::{
+    leave_drive_everywhere, reload_places_everywhere, reload_remote_everywhere,
+};
 pub(crate) use tabmove::MovedTab;
 
 /// The Arke window used last, where folders from other programs open as tabs (#11). gpui has no
@@ -1452,6 +1454,19 @@ impl Workspace {
         self.history_landed(source.entity_id(), kind, cx);
     }
 
+    /// A remote folder changed (servers send no change notifications): every pane showing it
+    /// relists.
+    pub(crate) fn reload_remote(&self, path: &Path, cx: &mut Context<Self>) {
+        let views: Vec<_> = self
+            .tabs
+            .iter()
+            .flat_map(|t| t.panes.iter().map(|p| p.view.clone()))
+            .collect();
+        for view in views {
+            view.update(cx, |v, cx| v.reload_if_showing(path, cx));
+        }
+    }
+
     fn on_explorer_event(
         &mut self,
         source: &Entity<Explorer>,
@@ -1531,16 +1546,7 @@ impl Workspace {
             }
             ExplorerEvent::ToggleCompare => self.toggle_compare(tab_ix, cx),
             ExplorerEvent::SelectDifferences => self.select_differences(tab_ix, cx),
-            ExplorerEvent::RemoteChanged(path) => {
-                let views: Vec<_> = self
-                    .tabs
-                    .iter()
-                    .flat_map(|t| t.panes.iter().map(|p| p.view.clone()))
-                    .collect();
-                for view in views {
-                    view.update(cx, |v, cx| v.reload_if_showing(path, cx));
-                }
-            }
+            ExplorerEvent::RemoteChanged(path) => self.reload_remote(path, cx),
             ExplorerEvent::WindowMenu(position) => self.open_window_menu(*position, window, cx),
             ExplorerEvent::ImportSettings(path) => {
                 self.import_settings_from_menu(path.clone(), window, cx);

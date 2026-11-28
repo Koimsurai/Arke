@@ -755,7 +755,11 @@ fn load(
                 return PreviewData::Nothing;
             };
             if is_markdown(path) {
-                return PreviewData::Markdown(arke_core::markdown::parse(&markdown_lines(&text)));
+                let placeholder = t!("preview.md_image");
+                return PreviewData::Markdown(arke_core::markdown::parse_with(
+                    &markdown_lines(&text),
+                    &placeholder,
+                ));
             }
             let lang = path
                 .extension()

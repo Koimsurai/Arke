@@ -489,8 +489,15 @@ fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
         let at = format!("{width} px: {drawn:?}, ⋯ {more}, pill {pill}, {shown} of {levels}");
         // The least used go first: a button in "⋯" never has a less used one still drawn.
         assert!(drawn.windows(2).all(|w| !w[0] || w[1]), "{at}");
-        assert_eq!(more, drawn.contains(&false), "⋯ holds what isn't drawn: {at}");
-        assert!(!more || pill, "the summary shortens before any button goes: {at}");
+        assert_eq!(
+            more,
+            drawn.contains(&false),
+            "⋯ holds what isn't drawn: {at}"
+        );
+        assert!(
+            !more || pill,
+            "the summary shortens before any button goes: {at}"
+        );
         assert!(
             shown == levels || (pill && drawn.iter().all(|d| !d)),
             "the path bar gives way last: {at}"
@@ -505,7 +512,10 @@ fn the_buttons_fold_before_the_path_bar_collapses(cx: &mut TestAppContext) {
             }
         }
     }
-    assert_eq!(seen, [true; 3], "every stage keeps the whole path at some width");
+    assert_eq!(
+        seen, [true; 3],
+        "every stage keeps the whole path at some width"
+    );
     // Too narrow for the path even with the buttons folded: it collapses.
     cx.simulate_resize(size(px(500.), px(650.)));
     settle(cx);
@@ -571,7 +581,7 @@ fn resize_like_the_platform(cx: &mut VisualTestContext, width: f32) {
     cx.simulate_resize(size(px(width), px(650.)));
     cx.run_until_parked();
     for _ in 0..8 {
-        if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
+        if cx.update(gpui::Window::simulate_next_frame) == 0 {
             break;
         }
         cx.run_until_parked();
@@ -605,7 +615,11 @@ fn the_pane_row_keeps_up_with_a_resize(cx: &mut TestAppContext) {
             "{width} px: buttons {drawn:?} next to a collapsed path bar"
         );
         settle(cx);
-        assert_eq!(row_state(cx), now, "{width} px: settled on the first frames");
+        assert_eq!(
+            row_state(cx),
+            now,
+            "{width} px: settled on the first frames"
+        );
     }
 }
 

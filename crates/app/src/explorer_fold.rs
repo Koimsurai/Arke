@@ -61,7 +61,10 @@ pub(super) struct SelectionLayout {
     pub(super) buttons: usize,
     /// Even "● 3 ⋯" leaves the path bar short of its whole width: it collapses levels (from its
     /// own slot's width, as it would anyway).
-    #[cfg_attr(not(test), allow(dead_code, reason = "the path bar collapses from its own width"))]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the path bar collapses from its own width")
+    )]
     pub(super) collapse: bool,
 }
 

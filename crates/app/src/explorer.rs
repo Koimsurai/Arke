@@ -741,11 +741,13 @@ pub(crate) struct RowFold {
 
 impl RowFold {
     /// The pane row folded Sort into "⋯".
+    #[cfg(test)]
     pub(crate) fn sort_in_more(&self) -> bool {
         self.row.is_some_and(|row| row.sort_folded())
     }
 
     /// The pane row folded synchronized browsing and compare into "⋯".
+    #[cfg(test)]
     pub(crate) fn toggles_in_more(&self) -> bool {
         self.row.is_some_and(|row| row.toggles_folded())
     }

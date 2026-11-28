@@ -224,7 +224,10 @@ impl Tools {
 
     /// Sort is in "⋯" (where there is a Sort).
     pub(super) const fn sort_folded(self) -> bool {
-        matches!(self, Self::SortFolded | Self::CountHidden | Self::TogglesFolded)
+        matches!(
+            self,
+            Self::SortFolded | Self::CountHidden | Self::TogglesFolded
+        )
     }
 
     /// The item count is left out (where there is one).
@@ -274,6 +277,7 @@ impl RowLayout {
     }
 
     /// Some of the view tools are in "⋯".
+    #[cfg(test)]
     pub(super) const fn tools_folded(&self) -> bool {
         self.in_more
     }
@@ -339,6 +343,7 @@ impl RowParts {
     }
 
     /// Everything drawn.
+    #[cfg(test)]
     pub(super) const fn everything(&self) -> RowLayout {
         self.at(Tools::All)
     }
@@ -643,7 +648,10 @@ mod tests {
             ..measured()
         }));
         let row = row_layout(967., 532.6, &parts);
-        assert!(!row.collapse && !row.switcher() && row.sort_folded(), "{row:?}");
+        assert!(
+            !row.collapse && !row.switcher() && row.sort_folded(),
+            "{row:?}"
+        );
         let selection = row.selection.expect("a selection");
         assert_eq!((selection.summary, selection.hidden), (Summary::Full, 0));
         assert!((parts.widths(&row).0.ceil() + 42. + 533. - 967.).abs() < 0.01);

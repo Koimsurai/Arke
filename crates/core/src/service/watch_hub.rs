@@ -402,7 +402,10 @@ mod tests {
             Some(trailing),
             "one relist waits, at the end of the second"
         );
-        step(&mut second, &mut relists, trailing - ms(1));
+        let just_before = trailing
+            .checked_sub(ms(1))
+            .expect("a second after the start");
+        step(&mut second, &mut relists, just_before);
         assert_eq!(relists_sent(&events), 0);
         step(&mut second, &mut relists, trailing);
         assert_eq!(
@@ -456,14 +459,13 @@ mod tests {
             changed,
         );
         step(&mut watched, &mut relists, changed + WATCH_DEBOUNCE);
-        {
-            let events = events.lock();
-            assert_eq!(events.len(), 3, "{events:?}");
-            assert!(
-                matches!(&events[2], IoEvent::Delta { delta, .. } if &*delta.removed[0] == "b.txt"),
-                "{events:?}"
-            );
-        }
+        let seen = events.lock();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(
+            matches!(&seen[2], IoEvent::Delta { delta, .. } if &*delta.removed[0] == "b.txt"),
+            "{seen:?}"
+        );
+        drop(seen);
         let trailing = relisted + WATCH_DEBOUNCE + RELIST_EVERY;
         assert_eq!(watched.due(), Some(trailing));
         step(&mut watched, &mut relists, trailing);

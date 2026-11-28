@@ -736,6 +736,29 @@ const fn shift_hit(hit: AccessHit, shift: bool) -> AccessHit {
     }
 }
 
+/// Adds rows to a menu already made (what the pane row folded into "⋯", #474). A row keeps its
+/// access key only if no row already there has it, as two rows never share one (#422); "Sort by"
+/// beside a folder's Open loses its O. Sharing with a top-row button is fine, as everywhere.
+fn add_rows(entries: &mut Vec<MenuEntry>, added: Vec<MenuEntry>) {
+    let key = |entry: &MenuEntry| match entry {
+        MenuEntry::Item(row) => row.access.map(|a| a.key.to_ascii_lowercase()),
+        MenuEntry::Submenu { access, .. } => access.map(|a| a.key.to_ascii_lowercase()),
+        MenuEntry::Actions(_) | MenuEntry::Separator => None,
+    };
+    for mut entry in added {
+        if let Some(mine) = key(&entry)
+            && entries.iter().any(|row| key(row) == Some(mine))
+        {
+            match &mut entry {
+                MenuEntry::Item(row) => row.access = None,
+                MenuEntry::Submenu { access, .. } => *access = None,
+                MenuEntry::Actions(_) | MenuEntry::Separator => {}
+            }
+        }
+        entries.push(entry);
+    }
+}
+
 /// The command a click runs: Shift+click on Delete deletes permanently, as in File Explorer.
 const fn click_command(command: MenuCommand, shift: bool) -> MenuCommand {
     match command {
@@ -1180,16 +1203,14 @@ impl ContextMenu {
             .collect()
     }
 
-    /// Test helper: the access key of the top-level row `label`, and its text as drawn (the CJK
-    /// form with the key after it, as `(N)`).
+    /// Test helper: the access key of the top-level row `label` (upper case), and its text as
+    /// drawn (the CJK form with the key after it, as `(N)`).
     #[cfg(test)]
     pub(crate) fn key_of(&self, label: &str) -> Option<(char, String)> {
         self.level(0).iter().find_map(|entry| match entry {
             MenuEntry::Item(row) if row.label.as_ref() == label => row.access.map(|access| {
-                (
-                    access.key,
-                    drawn_text(row.label.clone(), access).0.to_string(),
-                )
+                let text = drawn_text(row.label.clone(), access).0;
+                (access.key.to_ascii_uppercase(), text.to_string())
             }),
             _ => None,
         })
@@ -1731,12 +1752,15 @@ impl Explorer {
         let from_more = std::mem::take(&mut self.row_fold.menu_from_more);
         let row = self.row_fold.row.filter(|_| from_more);
         if row.is_some_and(|row| row.sort_folded()) && !self.search_mode && !targets.is_empty() {
-            entries.extend([MenuEntry::Separator, self.sort_submenu()]);
+            add_rows(
+                &mut entries,
+                vec![MenuEntry::Separator, self.sort_submenu()],
+            );
         }
         // With synchronized browsing and compare folded into it: they come along, checked while
         // on, as the buttons show them (#474).
         if row.is_some_and(|row| row.toggles_folded()) && self.pane.pair_toggles {
-            entries.extend(self.dual_toggle_items());
+            add_rows(&mut entries, self.dual_toggle_items());
         }
         let mut menu = ContextMenu::new(position, entries, cx.focus_handle(), targets);
         // Shift held, as File Explorer: the Windows menu includes commands registered to show
@@ -5048,7 +5072,9 @@ mod access_tests {
                 let added = if menu.starts_with("background") {
                     "sync compare"
                 } else if SELECTION.contains(menu) {
-                    "sort_by sync compare"
+                    // "Sort by" comes too, but keeps its key only where no row has it
+                    // (`add_rows`): beside Open, every language's is taken.
+                    "sync compare"
                 } else {
                     return None;
                 };
@@ -5203,6 +5229,36 @@ mod access_tests {
             key: None,
             pin: None,
         }
+    }
+
+    /// Rows "⋯" adds keep their key only where no row has it yet (#474).
+    #[test]
+    fn rows_added_to_a_menu_give_up_a_key_a_row_has() {
+        use MenuCommand as C;
+        let mut entries = vec![
+            keyed("Open", 'o', C::Open),
+            MenuEntry::Actions(vec![button("Rename", 'm', C::Rename, true)]),
+        ];
+        add_rows(
+            &mut entries,
+            vec![
+                MenuEntry::Separator,
+                submenu("Sort by", 'o', true),
+                keyed("Synchronized browsing", 'n', C::ToggleSync),
+                keyed("Compare folders", 'm', C::ToggleCompare),
+            ],
+        );
+        let keys: Vec<Option<char>> = entries
+            .iter()
+            .map(|entry| match entry {
+                MenuEntry::Item(row) => row.access.map(|a| a.key),
+                MenuEntry::Submenu { access, .. } => access.map(|a| a.key),
+                _ => None,
+            })
+            .collect();
+        // Sort by loses the O Open has; Compare keeps the M it shares with a button.
+        assert_eq!(keys, [Some('O'), None, None, None, Some('n'), Some('m')]);
+        assert_eq!(access_hit(&entries, None, 'o'), AccessHit::Run(C::Open));
     }
 
     #[test]

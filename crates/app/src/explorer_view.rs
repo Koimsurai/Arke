@@ -374,8 +374,6 @@ impl Explorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Action buttons are always icon-only to keep the bar uncluttered.
-        let compact = true;
         let count = self.selection.len();
         // Split view shows only the count, leaving room for "Copy to/Move to <destination>".
         let short = if self.pane.split {
@@ -405,24 +403,8 @@ impl Explorer {
         };
         let summary = match layout.summary {
             Summary::Pill => self.count_pill(count).into_any_element(),
-            form => div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(theme::s_8())
-                .mr(theme::s_4())
-                // The size the window's text has anyway, set here because `selection_parts`
-                // measures the summary at it.
-                .text_size(theme::fs_14())
-                .font_weight(theme::FW_STRONG)
-                .child(
-                    div()
-                        .size(theme::s_6())
-                        .rounded(theme::R_FULL)
-                        .bg(theme::signal()),
-                )
-                .child(if form == Summary::Full { full } else { short })
-                .into_any_element(),
+            Summary::Full => summary_label(full).into_any_element(),
+            Summary::Count => summary_label(short).into_any_element(),
         };
         let peer_actions = self.render_peer_actions(
             layout.labels,
@@ -430,7 +412,7 @@ impl Explorer {
             shows(Act::MoveToPeer),
             cx,
         );
-        div()
+        let row = div()
             .debug_selector(|| "selection-actions".to_owned())
             .relative()
             .child(self.info_probe())
@@ -441,7 +423,28 @@ impl Explorer {
             .overflow_hidden()
             .child(summary)
             .child(vertical_divider())
-            .children(peer_actions)
+            .children(peer_actions);
+        Self::add_selection_buttons(row, shows, cx)
+            // The buttons that didn't fit, in the selection's menu.
+            .when(layout.more(), |d| d.child(more_button(cx)))
+            .child(div().flex_1())
+            .child(clear_selection_button(
+                true,
+                cx.listener(|this, _: &ClickEvent, w, cx| this.escape(&Escape, w, cx)),
+            ))
+            .into_any_element()
+    }
+
+    /// Adds to the selection's `row` the regular buttons that `shows` keeps there, in drawing
+    /// order: Open, Cut, Copy, Rename and Delete.
+    fn add_selection_buttons(
+        row: gpui::Div,
+        shows: impl Fn(Act) -> bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        // Action buttons are always icon-only to keep the bar uncluttered.
+        let compact = true;
+        row
             // Next to Copy to/Move to there are no Open, Cut, Copy and Rename buttons: Enter,
             // Ctrl+X, Ctrl+C, F2 and the context menu still work.
             .when(shows(Act::Open), |d| {
@@ -498,14 +501,6 @@ impl Explorer {
                     cx.listener(Self::delete_clicked),
                 ))
             })
-            // The buttons that didn't fit, in the selection's menu.
-            .when(layout.more(), |d| d.child(more_button(cx)))
-            .child(div().flex_1())
-            .child(clear_selection_button(
-                compact,
-                cx.listener(|this, _: &ClickEvent, w, cx| this.escape(&Escape, w, cx)),
-            ))
-            .into_any_element()
     }
 
     /// The widths the selection's layouts are made of (see [`fold`]), from the tokens they are
@@ -2651,6 +2646,27 @@ fn peer_name(peer: &Path) -> String {
         || peer.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// The selection's summary in the pane row: the dot and `text` ("3 selected · 1.2 MB").
+fn summary_label(text: String) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(theme::s_8())
+        .mr(theme::s_4())
+        // The size the window's text has anyway, set here because `selection_parts` measures
+        // the summary at it.
+        .text_size(theme::fs_14())
+        .font_weight(theme::FW_STRONG)
+        .child(
+            div()
+                .size(theme::s_6())
+                .rounded(theme::R_FULL)
+                .bg(theme::signal()),
+        )
+        .child(text)
 }
 
 /// The selection's buttons, as [`hide_order`] lists them.

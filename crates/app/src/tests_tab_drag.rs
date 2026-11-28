@@ -629,3 +629,197 @@ fn folders_dragged_onto_the_pinned_list_are_pinned_there(cx: &mut TestAppContext
     );
     assert_eq!(favorites(cx), Some(vec![p(r"C:\a")]));
 }
+
+/// Starts a drag of `paths` from Explorer at `at` and moves it a little, so the favorites report
+/// where it would go in.
+fn explorer_drag(cx: &mut VisualTestContext, paths: &[&str], at: Point<gpui::Pixels>) {
+    let paths = ExternalPaths(paths.iter().map(|p| PathBuf::from(*p)).collect());
+    cx.simulate_event(FileDropEvent::Entered {
+        position: at,
+        paths,
+    });
+    cx.run_until_parked();
+    explorer_move(cx, at);
+    explorer_move(cx, at + point(px(1.), px(0.)));
+}
+
+fn explorer_move(cx: &mut VisualTestContext, at: Point<gpui::Pixels>) {
+    cx.simulate_event(FileDropEvent::Pending { position: at });
+    cx.run_until_parked();
+}
+
+/// Moves the drag around `at` until the hover check has answered and the insertion mark is gone.
+fn wait_for_no_mark(cx: &mut VisualTestContext, at: Point<gpui::Pixels>) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut nudge = 0.;
+    while cx.debug_bounds("pin-insertion-mark").is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the mark should go once no path is a folder"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        nudge = 1. - nudge;
+        explorer_move(cx, at + point(px(nudge), px(0.)));
+    }
+}
+
+/// Files dragged in from Explorer are not favorites. Dropped on the edge of a tile they are moved
+/// into its folder as on its middle: after the check that follows the drop, or at once when the
+/// hover check has already shown there is no folder among them.
+#[gpui::test]
+fn files_from_explorer_dropped_on_a_tile_edge_go_into_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\f", vec![file("x.txt", 1), file("y.txt", 1)]);
+    for dir in [r"C:\a", r"C:\b", r"C:\c"] {
+        fs.insert_many(dir, 1);
+    }
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\f");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "f", loaded(r"C:\f"));
+    with_settings(cx, |s| {
+        s.favorites = Some(vec![p(r"C:\a"), p(r"C:\b"), p(r"C:\c")]);
+    });
+
+    // Let go on the edge without waiting for the hover check.
+    let edge = left_edge(cx, "tile-slot-1");
+    explorer_drag(cx, &[r"C:\f\x.txt"], edge);
+    cx.simulate_event(FileDropEvent::Submit {
+        position: edge + point(px(1.), px(0.)),
+    });
+    wait_shell_in(cx, "move", || !shell.ops().is_empty());
+    assert_eq!(
+        shell.ops()[0],
+        FileOp::Move {
+            sources: vec![p(r"C:\f\x.txt")],
+            dest: p(r"C:\b"),
+        }
+    );
+    assert_eq!(
+        favorites(cx),
+        Some(vec![p(r"C:\a"), p(r"C:\b"), p(r"C:\c")]),
+        "files are not added"
+    );
+
+    // The same once checked: no mark, and the whole tile takes them.
+    let edge = left_edge(cx, "tile-slot-2");
+    explorer_drag(cx, &[r"C:\f\y.txt"], edge);
+    wait_for_no_mark(cx, edge);
+    assert!(
+        cx.debug_bounds("tile-add-favorite").is_none(),
+        "nothing to add, no slot"
+    );
+    cx.simulate_event(FileDropEvent::Submit {
+        position: edge + point(px(1.), px(0.)),
+    });
+    wait_shell_in(cx, "second move", || shell.ops().len() > 1);
+    assert_eq!(
+        shell.ops()[1],
+        FileOp::Move {
+            sources: vec![p(r"C:\f\y.txt")],
+            dest: p(r"C:\c"),
+        }
+    );
+    assert_eq!(favorites(cx).map(|f| f.len()), Some(3));
+}
+
+/// The same on the pinned list: the top edge of a row takes files into its folder.
+#[gpui::test]
+fn files_from_explorer_dropped_on_a_pinned_row_edge_go_into_it(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\f", vec![file("x.txt", 1)]);
+    for dir in [r"C:\a", r"C:\p"] {
+        fs.insert_many(dir, 1);
+    }
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\f");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "f", loaded(r"C:\f"));
+    with_settings(cx, |s| {
+        s.favorites = Some(vec![p(r"C:\a")]);
+        s.pinned = vec![p(r"C:\p")];
+    });
+
+    let row = cx.debug_bounds("pin-row-0").expect("the pinned row");
+    let top = point(row.center().x, row.top() + px(2.));
+    explorer_drag(cx, &[r"C:\f\x.txt"], top);
+    wait_for_no_mark(cx, top);
+    cx.simulate_event(FileDropEvent::Submit {
+        position: top + point(px(1.), px(0.)),
+    });
+    wait_shell_in(cx, "move", || !shell.ops().is_empty());
+    assert_eq!(
+        shell.ops()[0],
+        FileOp::Move {
+            sources: vec![p(r"C:\f\x.txt")],
+            dest: p(r"C:\p"),
+        }
+    );
+    let pinned = cx.update(|_, cx| SettingsStore::global(cx).read(cx).settings.pinned.clone());
+    assert_eq!(pinned, [p(r"C:\p")]);
+}
+
+/// Folders from Explorer keep their insertion mark after the check, alone or among files: the
+/// folders are added where the mark shows, the files are left.
+#[gpui::test]
+fn folders_from_explorer_dropped_on_a_tile_edge_are_still_added(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\f", vec![dir("one"), dir("two"), file("x.txt", 1)]);
+    for dir in [r"C:\a", r"C:\b", r"C:\f\one", r"C:\f\two"] {
+        fs.insert_many(dir, 1);
+    }
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(&shell), r"C:\f");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "f", loaded(r"C:\f"));
+    with_settings(cx, |s| s.favorites = Some(vec![p(r"C:\a"), p(r"C:\b")]));
+
+    let added = |cx: &mut VisualTestContext, n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while favorites(cx).map_or(0, |f| f.len()) < n {
+            assert!(Instant::now() < deadline, "the folder should be added");
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+
+    // A folder: given time to be checked, the mark still shows.
+    let edge = left_edge(cx, "tile-slot-1");
+    explorer_drag(cx, &[r"C:\f\one"], edge);
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(10));
+        explorer_move(cx, edge);
+    }
+    assert!(cx.debug_bounds("pin-insertion-mark").is_some());
+    cx.simulate_event(FileDropEvent::Submit {
+        position: edge + point(px(1.), px(0.)),
+    });
+    added(cx, 3);
+    assert_eq!(
+        favorites(cx),
+        Some(vec![p(r"C:\a"), p(r"C:\f\one"), p(r"C:\b")])
+    );
+
+    // A folder and a file: the folder is added, the file stays.
+    let edge = left_edge(cx, "tile-slot-1");
+    explorer_drag(cx, &[r"C:\f\two", r"C:\f\x.txt"], edge);
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(10));
+        explorer_move(cx, edge);
+    }
+    assert!(cx.debug_bounds("pin-insertion-mark").is_some());
+    cx.simulate_event(FileDropEvent::Submit {
+        position: edge + point(px(1.), px(0.)),
+    });
+    added(cx, 4);
+    assert_eq!(
+        favorites(cx),
+        Some(vec![
+            p(r"C:\a"),
+            p(r"C:\f\two"),
+            p(r"C:\f\one"),
+            p(r"C:\b")
+        ])
+    );
+    assert!(shell.ops().is_empty(), "nothing moved into a folder");
+}

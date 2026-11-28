@@ -319,7 +319,7 @@ impl Explorer {
     ) -> impl IntoElement {
         // Split panes are half width: the switcher is always folded into the view options button
         // there (the flyout has the same choices), leaving room for Copy to/Move to.
-        let switcher = fold.switcher && !self.pane.split;
+        let switcher = fold.switcher() && !self.pane.split;
         let tools = div()
             .relative()
             .child(self.tools_probe())
@@ -329,14 +329,14 @@ impl Explorer {
             .gap(theme::s_4())
             .when(fold.tools_more(), |d| d.child(more_button("row-more", cx)))
             // Search results keep their own order (relevance, or their headers).
-            .when(!self.search_mode && !fold.sort_folded, |d| {
+            .when(!self.search_mode && !fold.sort_folded(), |d| {
                 d.child(self.render_sort_options(window, cx))
             })
             .when(switcher, |d| d.child(self.render_view_switcher(window, cx)))
             .when(!switcher, |d| {
                 d.child(self.render_view_options(false, window, cx))
             })
-            .when(self.pane.pair_toggles && !fold.toggles_folded, |d| {
+            .when(self.pane.pair_toggles && !fold.toggles_folded(), |d| {
                 d.child(self.render_dual_toggles(cx))
             });
         div()
@@ -753,11 +753,9 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         self.cancel_early_menu();
-        self.row_fold.menu_adds_sort = self.row_fold.sort_in_more;
-        self.row_fold.menu_adds_toggles = self.row_fold.toggles_in_more;
+        self.row_fold.menu_from_more = true;
         self.open_context_menu(position, window, cx);
-        self.row_fold.menu_adds_sort = false;
-        self.row_fold.menu_adds_toggles = false;
+        self.row_fold.menu_from_more = false;
     }
 
     /// The selection in a narrow pane: "● 3" (the tooltip has the whole summary) and "⋯", which

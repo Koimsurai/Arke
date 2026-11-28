@@ -31,7 +31,7 @@ jobs:
         with:
           shared-key: test
           save-if: false # zizmor: ignore[cache-poisoning] restore only; caches are saved from main only
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-nextest
       - name: tag matches the version
@@ -62,7 +62,7 @@ jobs:
           shared-key: release-${{ matrix.arch }}
           workspaces: ". -> target/dist"
           save-if: false # zizmor: ignore[cache-poisoning] restore only; caches are saved from main only
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-about
       - name: add ARM64 target

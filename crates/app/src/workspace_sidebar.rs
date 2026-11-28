@@ -1278,7 +1278,7 @@ impl FileDropTarget for gpui::Stateful<gpui::Div> {
                 }),
             )
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                if !this.drop_external_to_pin(paths, window, cx) {
+                if !this.drop_external_to_pin(paths, Some(external.clone()), window, cx) {
                     let target = this.active_view().clone();
                     drop_external_into(paths, external.clone(), &target, window, cx);
                 }
